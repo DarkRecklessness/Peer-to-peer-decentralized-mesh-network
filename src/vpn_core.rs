@@ -2,21 +2,31 @@ use iroh::PublicKey;
 use std::collections::{HashMap, VecDeque};
 use std::net::Ipv4Addr;
 
+const MAX_PACKETS_IN_QUEUE: usize = 1000;
+
 struct VpnCore {
 	max_packet_size: usize,
 	ipv4_addr: Ipv4Addr,
-	peer_connections: HashMap<PublicKey, bool>,
+	peers: HashMap<PublicKey, PeerState>,
 	ip_pk: HashMap<Ipv4Addr, PublicKey>,
-	packet_queues: HashMap<PublicKey, VecDeque<Vec<u8>>>
 }
+
+struct PeerState {
+	is_connected: bool,
+	ipv4_addr: Ipv4Addr,
+	packet_queue: VecDeque<Vec<u8>>,
+}
+
+// TODO: Errors description
+// TODO: fix unwrap() and [] everywhere
 
 #[derive(Debug, PartialEq)]
 pub enum Action {
 	ConnectToPeer(PublicKey),
 	DisconnectFromPeer(PublicKey),
 	SendPacketTo(Vec<u8>, PublicKey),
-	RecvPacketFrom(Vec<u8>, PublicKey),
-	NoAction(IgnoreReason)
+	WriteToTun(Vec<u8>),
+	NoAction(IgnoreReason),
 }
 
 #[derive(Debug, PartialEq)]
@@ -26,7 +36,7 @@ pub enum IgnoreReason {
 	AlreadyDisconnected,
 	SendPacketError(SendPacketError),
 	RecvPacketError(RecvPacketError),
-	ConnectionNotOpen
+	ConnectionNotOpen,
 }
 
 #[derive(Debug, PartialEq)]
@@ -35,40 +45,47 @@ pub enum SendPacketError {
 	UnknownDestIp,
 	MtuError,
 	IncorrectIpVersion,
-	IncorrectTTL
+	IncorrectTTL,
+	TooSmallPacket,
+	BrokenPackage,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum RecvPacketError {
-	IncorrectSrcIp,
-	UnknownDestIp,
+	UnknownSrcIp,
+	IncorrectDestIp,
 	MtuError,
 	IncorrectIpVersion,
-	IncorrectTTL
+	Spoofing,
+	TooSmallPacket,
+	BrokenPackage,
+	// Spam,
 }
 
 impl VpnCore {
 	pub fn new(ipv4_addr: Ipv4Addr, ip_pk: HashMap<Ipv4Addr, PublicKey>, max_packet_size: usize) -> VpnCore {
-		let mut peer_connections: HashMap<PublicKey, bool> = HashMap::new();
-		let mut packet_queues: HashMap<PublicKey, VecDeque<Vec<u8>>> = HashMap::new();
+		let mut peers: HashMap<PublicKey, PeerState> = HashMap::new();
 		for pair in &ip_pk {
-			peer_connections.insert(pair.1.clone(), false);
-			packet_queues.insert(pair.1.clone(), VecDeque::<Vec<u8>>::new());
+			peers.insert(*pair.1, PeerState {
+				is_connected: false,
+				ipv4_addr: *pair.0,
+				packet_queue: VecDeque::<Vec<u8>>::new(),
+			});
 		}
 		
-		return VpnCore {
+		VpnCore {
 			ipv4_addr,
-			peer_connections,
 			ip_pk,
-			packet_queues,
-			max_packet_size
-		};
+			max_packet_size,
+			peers
+		}
 	}
 
 	pub fn verify_connection(&self, pub_key: &PublicKey) -> bool {
-		return self.is_neighbour(pub_key);
+		self.is_neighbour(pub_key)
 	}
 
+	// TODO: optimize func - only 1 search in map
 	pub fn peer_connected(&mut self, node: &PublicKey) -> Vec<Action> {
 		if !self.verify_connection(node) {
 			return vec![Action::DisconnectFromPeer(node.clone())];
@@ -79,12 +96,12 @@ impl VpnCore {
 		}
 
 		let mut actions: Vec<Action> = Vec::new();
-		// fix unwrap() everywhere
-		*self.peer_connections.get_mut(node).unwrap() = true;
-		while let Some(packet) = self.packet_queues.get_mut(node).unwrap().pop_front() {
+		// TODO: optimize part with n + 2 search
+		self.peers.get_mut(node).unwrap().is_connected = true; // separate func
+		while let Some(packet) = self.peers.get_mut(node).unwrap().packet_queue.pop_front() {
 			actions.push(Action::SendPacketTo(packet, node.clone()));
 		}
-		return actions;
+		actions
 	}
 
 	pub fn peer_disconnected(&mut self, node: &PublicKey) -> Vec<Action> {
@@ -96,8 +113,8 @@ impl VpnCore {
 			return vec![Action::NoAction(IgnoreReason::AlreadyDisconnected)];
 		}
 
-		*self.peer_connections.get_mut(node).unwrap() = false;
-		return vec![];
+		self.peers.get_mut(node).unwrap().is_connected = false;
+		vec![]
 	}
 
 	// packet - ipv4 packet
@@ -109,9 +126,8 @@ impl VpnCore {
 				if self.is_connect_open(&pub_key) {
 					return vec![Action::SendPacketTo(packet, pub_key)];
 				} else {
-					let queue = self.packet_queues.get_mut(&pub_key).unwrap();
-					// make global constant instead of 1000
-					if queue.len() >= 1000 {
+					let queue = &mut self.peers.get_mut(&pub_key).unwrap().packet_queue;
+					if queue.len() >= MAX_PACKETS_IN_QUEUE {
 						queue.pop_front();
 					}
 					queue.push_back(packet);
@@ -124,15 +140,22 @@ impl VpnCore {
 		}
 	}
 
+	pub fn recv_packet(&self, packet: Vec<u8>, from: &PublicKey) -> Vec<Action> {
+		let result = self.verify_recv_packet(&packet[..], from);
+		match result {
+			Ok(_) => {
+				return vec![Action::WriteToTun(packet)];
+			}
+			Err(e) => {
+				return vec![Action::NoAction(IgnoreReason::RecvPacketError(e))];
+			}
+		}
+	}
+
 	fn verify_send_packet(&self, packet: &[u8]) -> Result<Ipv4Addr, SendPacketError> {
-		// possible problems
-		// 1. wrong src ip
-		// 2. dest ip not in list
-		// 3. mtu check
-		// 4. ip version
-		// 5. ttl = 0
-		// TODO: total lenght check (slice by OS)
-		// TODO: check too small packets!!!
+		if packet.len() < 20 {
+			return Err(SendPacketError::TooSmallPacket);
+		}
 
 		let ip_version = packet[0] >> 4;
 		if ip_version != 4 {
@@ -141,6 +164,11 @@ impl VpnCore {
 
 		if packet.len() > self.max_packet_size {
 			return Err(SendPacketError::MtuError);
+		}
+
+		let total_length = ((packet[2] as usize) << 8) | (packet[3] as usize);
+		if packet.len() < total_length {
+			return Err(SendPacketError::BrokenPackage);
 		}
 
 		let ttl = packet[8];
@@ -158,19 +186,56 @@ impl VpnCore {
 			return Err(SendPacketError::UnknownDestIp);
 		}
 
-		return Ok(dest_ip);
+		Ok(dest_ip)
+	}
+
+	fn verify_recv_packet(&self, packet: &[u8], from: &PublicKey) -> Result<(), RecvPacketError> {
+		// TODO: header checksum checker
+
+		if packet.len() < 20 {
+			return Err(RecvPacketError::TooSmallPacket);
+		}
+
+		let ip_version = packet[0] >> 4;
+		if ip_version != 4 {
+			return Err(RecvPacketError::IncorrectIpVersion);
+		}
+
+		if packet.len() > self.max_packet_size {
+			return Err(RecvPacketError::MtuError);
+		}
+
+		let total_length = ((packet[2] as usize) << 8) | (packet[3] as usize);
+		if packet.len() < total_length {
+			return Err(RecvPacketError::BrokenPackage);
+		}
+
+		let src_ip = Ipv4Addr::new(packet[12], packet[13], packet[14], packet[15]);
+		if !self.is_neighbour_ipv4(&src_ip) {
+			return Err(RecvPacketError::UnknownSrcIp);
+		}
+
+		let dest_ip = Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
+		if dest_ip != self.ipv4_addr {
+			return Err(RecvPacketError::IncorrectDestIp);
+		}
+
+		if self.ip_pk[&src_ip] != *from {
+			return Err(RecvPacketError::Spoofing);
+		}
+
+		Ok(())
 	}
 
 	fn is_neighbour(&self, node: &PublicKey) -> bool {
-		return self.peer_connections.contains_key(node);
+		self.peers.contains_key(node)
 	}
 
 	fn is_neighbour_ipv4(&self, node: &Ipv4Addr) -> bool {
-		return self.ip_pk.contains_key(node);
+		self.ip_pk.contains_key(node)
 	}
 
 	fn is_connect_open(&self, node: &PublicKey) -> bool {
-		return self.peer_connections[node];
+		self.peers[node].is_connected
 	}
-
 }
