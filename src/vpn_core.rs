@@ -1,6 +1,7 @@
 use iroh::PublicKey;
 use std::collections::{HashMap, VecDeque};
 use std::net::Ipv4Addr;
+use std::fmt;
 
 const MAX_PACKETS_IN_QUEUE: usize = 1000;
 
@@ -16,8 +17,6 @@ struct PeerState {
 	ipv4_addr: Ipv4Addr,
 	packet_queue: VecDeque<Vec<u8>>,
 }
-
-// TODO: Errors description
 
 #[derive(Debug, PartialEq)]
 pub enum Action {
@@ -59,6 +58,59 @@ pub enum RecvPacketError {
 	TooSmallPacket,
 	BrokenPackage,
 	// Spam,
+}
+
+impl fmt::Display for Action {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match self {
+			Action::ConnectToPeer(pub_key) => write!(f, "Connect to: {}", pub_key),
+			Action::DisconnectFromPeer(pub_key) => write!(f, "Disconnect from: {}", pub_key),
+			Action::SendPacketTo(packet, pub_key) => write!(f, "Send {} bytes to {}", packet.len(), pub_key),
+            Action::WriteToTun(packet) => write!(f, "Write {} bytes to TUN", packet.len()),
+            Action::NoAction(reason) => write!(f, "Ignored -> {}", reason),
+		}
+	}
+}
+
+impl fmt::Display for IgnoreReason {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match self {
+			IgnoreReason::UnknownPeer => write!(f, "Unknown peer"),
+			IgnoreReason::AlreadyConnected => write!(f, "Peers are already connected"),
+			IgnoreReason::AlreadyDisconnected => write!(f, "Peers are already disconnected"),
+			IgnoreReason::SendPacketError(e) => write!(f, "Dropped outgoing packet: {}", e),
+			IgnoreReason::RecvPacketError(e) => write!(f, "Dropped incoming packet: {}", e),
+			IgnoreReason::ConnectionNotOpen => write!(f, "Connection is not open"),
+		}
+	}
+}
+
+impl fmt::Display for SendPacketError {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match self {
+			SendPacketError::IncorrectSrcIp => write!(f, "source IP does not match the assigned tun IP"),
+            SendPacketError::UnknownDestIp => write!(f, "destination IP is not found in the routing table"),
+            SendPacketError::MtuError => write!(f, "packet length exceeds the MTU limit"),
+            SendPacketError::IncorrectIpVersion => write!(f, "unsupported IP version (only IPv4 is allowed)"),
+            SendPacketError::IncorrectTTL => write!(f, "TTL is 0 or invalid"),
+            SendPacketError::TooSmallPacket => write!(f, "packet is too small to contain a valid IPv4 header"),
+            SendPacketError::BrokenPackage => write!(f, "incorrect length of packet"),
+		}
+	}
+}
+
+impl fmt::Display for RecvPacketError {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match self {
+			RecvPacketError::UnknownSrcIp => write!(f, "source IP is not found in the routing table"),
+            RecvPacketError::IncorrectDestIp => write!(f, "destination IP does not match local tun IP"),
+            RecvPacketError::MtuError => write!(f, "received packet length exceeds the MTU limit"),
+            RecvPacketError::IncorrectIpVersion => write!(f, "unsupported IP version (only IPv4 is allowed)"),
+            RecvPacketError::Spoofing => write!(f, "anti-spoofing triggered: Source IP does not match the sender's public key"),
+            RecvPacketError::TooSmallPacket => write!(f, "received packet is too small to contain a valid IPv4 header"),
+            RecvPacketError::BrokenPackage => write!(f, "incorrect length of packet"),
+		}
+	}
 }
 
 impl VpnCore {
