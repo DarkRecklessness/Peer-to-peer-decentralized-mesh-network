@@ -18,7 +18,6 @@ struct PeerState {
 }
 
 // TODO: Errors description
-// TODO: fix unwrap() and [] everywhere
 
 #[derive(Debug, PartialEq)]
 pub enum Action {
@@ -85,7 +84,6 @@ impl VpnCore {
 		self.is_neighbour(pub_key)
 	}
 
-	// TODO: optimize func - only 1 search in map
 	pub fn peer_connected(&mut self, node: &PublicKey) -> Vec<Action> {
 		if !self.verify_connection(node) {
 			return vec![Action::DisconnectFromPeer(node.clone())];
@@ -96,10 +94,11 @@ impl VpnCore {
 		}
 
 		let mut actions: Vec<Action> = Vec::new();
-		// TODO: optimize part with n + 2 search
-		self.peers.get_mut(node).unwrap().is_connected = true; // separate func
-		while let Some(packet) = self.peers.get_mut(node).unwrap().packet_queue.pop_front() {
-			actions.push(Action::SendPacketTo(packet, node.clone()));
+		if let Some(peer) = self.peers.get_mut(node) {
+			peer.is_connected = true;
+			while let Some(packet) = peer.packet_queue.pop_front() {
+				actions.push(Action::SendPacketTo(packet, node.clone()));
+			}	
 		}
 		actions
 	}
@@ -113,7 +112,9 @@ impl VpnCore {
 			return vec![Action::NoAction(IgnoreReason::AlreadyDisconnected)];
 		}
 
-		self.peers.get_mut(node).unwrap().is_connected = false;
+		if let Some(peer) = self.peers.get_mut(node) {
+			peer.is_connected = false;
+		}
 		vec![]
 	}
 
@@ -122,17 +123,21 @@ impl VpnCore {
 		let result = self.verify_send_packet(&packet[..]);
 		match result {
 			Ok(dest_ip) => {
-				let pub_key = self.ip_pk[&dest_ip];
-				if self.is_connect_open(&pub_key) {
-					return vec![Action::SendPacketTo(packet, pub_key)];
-				} else {
-					let queue = &mut self.peers.get_mut(&pub_key).unwrap().packet_queue;
-					if queue.len() >= MAX_PACKETS_IN_QUEUE {
-						queue.pop_front();
+				if let Some(pub_key) = self.ip_pk.get(&dest_ip) {
+					if self.is_connect_open(pub_key) {
+						return vec![Action::SendPacketTo(packet, pub_key.clone())];
+					} else {
+						if let Some(peer) = self.peers.get_mut(pub_key) {
+							let queue = &mut peer.packet_queue;
+							if queue.len() >= MAX_PACKETS_IN_QUEUE {
+								queue.pop_front();
+							}
+							queue.push_back(packet);
+						}
+						return vec![Action::NoAction(IgnoreReason::ConnectionNotOpen)];
 					}
-					queue.push_back(packet);
-					return vec![Action::NoAction(IgnoreReason::ConnectionNotOpen)];
 				}
+				return vec![Action::NoAction(IgnoreReason::SendPacketError(SendPacketError::UnknownDestIp))];
 			}
 			Err(e) => {
 				return vec![Action::NoAction(IgnoreReason::SendPacketError(e))];
@@ -190,8 +195,6 @@ impl VpnCore {
 	}
 
 	fn verify_recv_packet(&self, packet: &[u8], from: &PublicKey) -> Result<(), RecvPacketError> {
-		// TODO: header checksum checker
-
 		if packet.len() < 20 {
 			return Err(RecvPacketError::TooSmallPacket);
 		}
