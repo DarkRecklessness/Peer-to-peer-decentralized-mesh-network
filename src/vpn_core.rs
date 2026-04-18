@@ -2,6 +2,7 @@ use iroh::PublicKey;
 use std::collections::{HashMap, VecDeque};
 use std::net::Ipv4Addr;
 use std::fmt;
+use bytes::Bytes;
 
 const MAX_PACKETS_IN_QUEUE: usize = 1000;
 
@@ -15,15 +16,15 @@ struct VpnCore {
 struct PeerState {
 	is_connected: bool,
 	ipv4_addr: Ipv4Addr,
-	packet_queue: VecDeque<Vec<u8>>,
+	packet_queue: VecDeque<Bytes>,
 }
 
 #[derive(Debug, PartialEq)]
 pub enum Action {
 	ConnectToPeer(PublicKey),
 	DisconnectFromPeer(PublicKey),
-	SendPacketTo(Vec<u8>, PublicKey),
-	WriteToTun(Vec<u8>),
+	SendPacketTo(Bytes, PublicKey),
+	WriteToTun(Bytes),
 	NoAction(IgnoreReason),
 }
 
@@ -120,7 +121,7 @@ impl VpnCore {
 			peers.insert(*pair.1, PeerState {
 				is_connected: false,
 				ipv4_addr: *pair.0,
-				packet_queue: VecDeque::<Vec<u8>>::new(),
+				packet_queue: VecDeque::<Bytes>::new(),
 			});
 		}
 		
@@ -171,8 +172,8 @@ impl VpnCore {
 	}
 
 	// packet - ipv4 packet
-	pub fn send_packet(&mut self, packet: Vec<u8>) -> Vec<Action> {
-		let result = self.verify_send_packet(&packet[..]);
+	pub fn send_packet(&mut self, packet: Bytes) -> Vec<Action> {
+		let result = self.verify_send_packet(&packet);
 		match result {
 			Ok(dest_ip) => {
 				if let Some(pub_key) = self.ip_pk.get(&dest_ip) {
@@ -197,8 +198,8 @@ impl VpnCore {
 		}
 	}
 
-	pub fn recv_packet(&self, packet: Vec<u8>, from: &PublicKey) -> Vec<Action> {
-		let result = self.verify_recv_packet(&packet[..], from);
+	pub fn recv_packet(&self, packet: Bytes, from: &PublicKey) -> Vec<Action> {
+		let result = self.verify_recv_packet(&packet, from);
 		match result {
 			Ok(_) => {
 				return vec![Action::WriteToTun(packet)];
@@ -209,7 +210,7 @@ impl VpnCore {
 		}
 	}
 
-	fn verify_send_packet(&self, packet: &[u8]) -> Result<Ipv4Addr, SendPacketError> {
+	fn verify_send_packet(&self, packet: &Bytes) -> Result<Ipv4Addr, SendPacketError> {
 		if packet.len() < 20 {
 			return Err(SendPacketError::TooSmallPacket);
 		}
@@ -246,7 +247,7 @@ impl VpnCore {
 		Ok(dest_ip)
 	}
 
-	fn verify_recv_packet(&self, packet: &[u8], from: &PublicKey) -> Result<(), RecvPacketError> {
+	fn verify_recv_packet(&self, packet: &Bytes, from: &PublicKey) -> Result<(), RecvPacketError> {
 		if packet.len() < 20 {
 			return Err(RecvPacketError::TooSmallPacket);
 		}
