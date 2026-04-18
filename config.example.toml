@@ -1,0 +1,30 @@
+# Path to the secret key (required).
+# If the file does not exist, a new secret key will be generated and saved here.
+# The public key will be printed to the standard output at startup.
+secret_key_path = "/path/to/your/secret.key"
+
+# Node IPv4 address. 
+# IMPORTANT: The address must be within the 10.67.0.0/16 subnet.
+node_ipv4 = "10.67.1.5"
+
+# Port for incoming connections (optional).
+# Uncomment to override the default behavior.
+# listen_port = 6767
+
+# Maximum Transmission Unit (optional, default is 1500).
+# Specifies the maximum packet size that will not be fragmented 
+# on the way to adjacent nodes.
+# mtu = 1500
+
+
+# ==========================================
+# Adjacent nodes (Whitelist)
+# ==========================================
+# You can add multiple [[peers]] blocks to define your whitelist.
+[[peers]]
+pub_key = "3pj4c7xtn1r8x8o1q8z9e4j6h5w3a3m9p7z8n1r8x8o1q8z9e4jy"
+ipv4 = "10.67.2.10"
+
+# [[peers]]
+# pub_key = "4pj4c7xtn1r8x8o1q8z9e4j6h5w3a3m9p7z8n1r8x8o1q8z9e4jy"
+# ipv4 = "10.67.1.11"
