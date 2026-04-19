@@ -36,6 +36,7 @@ pub enum IgnoreReason {
 	SendPacketError(SendPacketError),
 	RecvPacketError(RecvPacketError),
 	ConnectionNotOpen,
+	InternalStateError,
 }
 
 #[derive(Debug, PartialEq)]
@@ -82,6 +83,7 @@ impl fmt::Display for IgnoreReason {
 			IgnoreReason::SendPacketError(e) => write!(f, "Dropped outgoing packet: {}", e),
 			IgnoreReason::RecvPacketError(e) => write!(f, "Dropped incoming packet: {}", e),
 			IgnoreReason::ConnectionNotOpen => write!(f, "Connection is not open"),
+			IgnoreReason::InternalStateError => write!(f, "Internal State Error"),
 		}
 	}
 }
@@ -146,14 +148,14 @@ impl VpnCore {
 			return vec![Action::NoAction(IgnoreReason::AlreadyConnected)];
 		}
 
-		let mut actions: Vec<Action> = Vec::new();
 		if let Some(peer) = self.peers.get_mut(node) {
 			peer.is_connected = true;
-			while let Some(packet) = peer.packet_queue.pop_front() {
-				actions.push(Action::SendPacketTo(packet, node.clone()));
-			}	
+			return peer.packet_queue
+			           .drain(..)
+			           .map(|packet| Action::SendPacketTo(packet, node.clone()))
+			           .collect();
 		}
-		actions
+		vec![Action::NoAction(IgnoreReason::InternalStateError)]
 	}
 
 	pub fn on_peer_disconnected(&mut self, node: &PublicKey) -> Vec<Action> {
@@ -167,8 +169,9 @@ impl VpnCore {
 
 		if let Some(peer) = self.peers.get_mut(node) {
 			peer.is_connected = false;
+			return vec![];
 		}
-		vec![]
+		vec![Action::NoAction(IgnoreReason::InternalStateError)]
 	}
 
 	// packet - ipv4 packet
