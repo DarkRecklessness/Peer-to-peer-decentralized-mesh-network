@@ -117,10 +117,10 @@ impl fmt::Display for RecvPacketError {
 impl VpnCore {
 	pub fn new(ipv4_addr: Ipv4Addr, ip_pk: HashMap<Ipv4Addr, PublicKey>, max_packet_size: usize) -> VpnCore {
 		let mut peers: HashMap<PublicKey, PeerState> = HashMap::new();
-		for pair in &ip_pk {
-			peers.insert(*pair.1, PeerState {
+		for (ip, pub_key) in &ip_pk {
+			peers.insert(*pub_key, PeerState {
 				is_connected: false,
-				ipv4_addr: *pair.0,
+				ipv4_addr: *ip,
 				packet_queue: VecDeque::<Bytes>::new(),
 			});
 		}
@@ -137,7 +137,7 @@ impl VpnCore {
 		self.is_neighbour(pub_key)
 	}
 
-	pub fn peer_connected(&mut self, node: &PublicKey) -> Vec<Action> {
+	pub fn on_peer_connected(&mut self, node: &PublicKey) -> Vec<Action> {
 		if !self.verify_connection(node) {
 			return vec![Action::DisconnectFromPeer(node.clone())];
 		}
@@ -156,7 +156,7 @@ impl VpnCore {
 		actions
 	}
 
-	pub fn peer_disconnected(&mut self, node: &PublicKey) -> Vec<Action> {
+	pub fn on_peer_disconnected(&mut self, node: &PublicKey) -> Vec<Action> {
 		if !self.verify_connection(node) {
 			return vec![Action::NoAction(IgnoreReason::UnknownPeer)];
 		}
