@@ -25,11 +25,11 @@ pub enum Action {
 	DisconnectFromPeer(PublicKey),
 	SendPacketTo(Bytes, PublicKey),
 	WriteToTun(Bytes),
-	NoAction(IgnoreReason),
+	NoAction(LogEvent),
 }
 
 #[derive(Debug, PartialEq)]
-pub enum IgnoreReason {
+pub enum LogEvent {
 	UnknownPeer,
 	AlreadyConnected,
 	AlreadyDisconnected,
@@ -37,6 +37,8 @@ pub enum IgnoreReason {
 	RecvPacketError(RecvPacketError),
 	ConnectionNotOpen,
 	InternalStateError,
+	PacketBuffered,
+	PacketQueueOverflow,
 }
 
 #[derive(Debug, PartialEq)]
@@ -74,16 +76,18 @@ impl fmt::Display for Action {
 	}
 }
 
-impl fmt::Display for IgnoreReason {
+impl fmt::Display for LogEvent {
 	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
 		match self {
-			IgnoreReason::UnknownPeer => write!(f, "Unknown peer"),
-			IgnoreReason::AlreadyConnected => write!(f, "Peers are already connected"),
-			IgnoreReason::AlreadyDisconnected => write!(f, "Peers are already disconnected"),
-			IgnoreReason::SendPacketError(e) => write!(f, "Dropped outgoing packet: {}", e),
-			IgnoreReason::RecvPacketError(e) => write!(f, "Dropped incoming packet: {}", e),
-			IgnoreReason::ConnectionNotOpen => write!(f, "Connection is not open"),
-			IgnoreReason::InternalStateError => write!(f, "Internal State Error"),
+			LogEvent::UnknownPeer => write!(f, "Unknown peer"),
+			LogEvent::AlreadyConnected => write!(f, "Peers are already connected"),
+			LogEvent::AlreadyDisconnected => write!(f, "Peers are already disconnected"),
+			LogEvent::SendPacketError(e) => write!(f, "Dropped outgoing packet: {}", e),
+			LogEvent::RecvPacketError(e) => write!(f, "Dropped incoming packet: {}", e),
+			LogEvent::ConnectionNotOpen => write!(f, "Connection is not open"),
+			LogEvent::InternalStateError => write!(f, "Internal State Error"),
+			LogEvent::PacketBuffered => write!(f, "Packet buffered (connection is not open yet)"),
+			LogEvent::PacketQueueOverflow => write!(f, "Queue overflow: oldest packet dropped"),
 		}
 	}
 }
@@ -145,7 +149,7 @@ impl VpnCore {
 		}
 
 		if self.is_connect_open(node) {
-			return vec![Action::NoAction(IgnoreReason::AlreadyConnected)];
+			return vec![Action::NoAction(LogEvent::AlreadyConnected)];
 		}
 
 		if let Some(peer) = self.peers.get_mut(node) {
@@ -155,23 +159,23 @@ impl VpnCore {
 			           .map(|packet| Action::SendPacketTo(packet, node.clone()))
 			           .collect();
 		}
-		vec![Action::NoAction(IgnoreReason::InternalStateError)]
+		vec![Action::NoAction(LogEvent::InternalStateError)]
 	}
 
 	pub fn on_peer_disconnected(&mut self, node: &PublicKey) -> Vec<Action> {
 		if !self.verify_connection(node) {
-			return vec![Action::NoAction(IgnoreReason::UnknownPeer)];
+			return vec![Action::NoAction(LogEvent::UnknownPeer)];
 		}
 
 		if !self.is_connect_open(node) {
-			return vec![Action::NoAction(IgnoreReason::AlreadyDisconnected)];
+			return vec![Action::NoAction(LogEvent::AlreadyDisconnected)];
 		}
 
 		if let Some(peer) = self.peers.get_mut(node) {
 			peer.is_connected = false;
 			return vec![];
 		}
-		vec![Action::NoAction(IgnoreReason::InternalStateError)]
+		vec![Action::NoAction(LogEvent::InternalStateError)]
 	}
 
 	// packet - ipv4 packet
@@ -190,13 +194,13 @@ impl VpnCore {
 							}
 							queue.push_back(packet);
 						}
-						return vec![Action::NoAction(IgnoreReason::ConnectionNotOpen)];
+						return vec![Action::NoAction(LogEvent::ConnectionNotOpen)];
 					}
 				}
-				return vec![Action::NoAction(IgnoreReason::SendPacketError(SendPacketError::UnknownDestIp))];
+				return vec![Action::NoAction(LogEvent::SendPacketError(SendPacketError::UnknownDestIp))];
 			}
 			Err(e) => {
-				return vec![Action::NoAction(IgnoreReason::SendPacketError(e))];
+				return vec![Action::NoAction(LogEvent::SendPacketError(e))];
 			}
 		}
 	}
@@ -208,7 +212,7 @@ impl VpnCore {
 				return vec![Action::WriteToTun(packet)];
 			}
 			Err(e) => {
-				return vec![Action::NoAction(IgnoreReason::RecvPacketError(e))];
+				return vec![Action::NoAction(LogEvent::RecvPacketError(e))];
 			}
 		}
 	}
