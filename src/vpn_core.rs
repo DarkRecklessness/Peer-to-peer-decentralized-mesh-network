@@ -8,7 +8,7 @@ use crate::packet::ipv4::{self, Ipv4Packet};
 
 const MAX_PACKETS_IN_QUEUE: usize = 1000;
 
-struct VpnCore {
+pub struct VpnCore {
 	max_packet_size: usize,
 	ipv4_addr: Ipv4Addr,
 	peers: HashMap<PublicKey, PeerState>,
@@ -19,6 +19,14 @@ struct PeerState {
 	is_connected: bool,
 	ipv4_addr: Ipv4Addr,
 	packet_queue: VecDeque<Bytes>,
+}
+
+#[derive(Debug, PartialEq)]
+pub enum Event {
+	PeerConnected(PublicKey),
+	PeerDisconnected(PublicKey),
+	PacketFromTun(Bytes),
+	PacketFromIroh(Bytes, PublicKey),
 }
 
 #[derive(Debug, PartialEq)]
@@ -145,7 +153,16 @@ impl VpnCore {
 		self.is_neighbour(pub_key)
 	}
 
-	pub fn on_peer_connected(&mut self, node: &PublicKey) -> Vec<Action> {
+	pub fn process(&mut self, event: Event) -> Vec<Action> {
+		match event {
+			Event::PeerConnected(pk) => self.on_peer_connected(&pk),
+			Event::PeerDisconnected(pk) => self.on_peer_disconnected(&pk),
+			Event::PacketFromTun(packet) => self.send_packet(packet),
+			Event::PacketFromIroh(packet, from) => self.recv_packet(packet, &from),
+		}
+	}
+
+	fn on_peer_connected(&mut self, node: &PublicKey) -> Vec<Action> {
 		if !self.is_neighbour(node) {
 			return vec![Action::DisconnectFromPeer(node.clone())];
 		}
@@ -164,7 +181,7 @@ impl VpnCore {
 		vec![Action::NoAction(LogEvent::InternalStateError)]
 	}
 
-	pub fn on_peer_disconnected(&mut self, node: &PublicKey) -> Vec<Action> {
+	fn on_peer_disconnected(&mut self, node: &PublicKey) -> Vec<Action> {
 		if !self.is_neighbour(node) {
 			return vec![Action::NoAction(LogEvent::UnknownPeer)];
 		}
@@ -180,7 +197,7 @@ impl VpnCore {
 		vec![Action::NoAction(LogEvent::InternalStateError)]
 	}
 
-	pub fn send_packet(&mut self, packet: Bytes) -> Vec<Action> {
+	fn send_packet(&mut self, packet: Bytes) -> Vec<Action> {
 		let check_result = self.verify_send_packet(&packet);
 		let dest_ip = match check_result {
 			Ok(ip) => ip,
@@ -220,7 +237,7 @@ impl VpnCore {
 		actions
 	}
 
-	pub fn recv_packet(&self, packet: Bytes, from: &PublicKey) -> Vec<Action> {
+	fn recv_packet(&self, packet: Bytes, from: &PublicKey) -> Vec<Action> {
 		let result = self.verify_recv_packet(&packet, from);
 		match result {
 			Ok(_) => {
