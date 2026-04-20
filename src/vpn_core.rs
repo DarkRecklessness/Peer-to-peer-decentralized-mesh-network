@@ -180,29 +180,43 @@ impl VpnCore {
 
 	// packet - ipv4 packet
 	pub fn send_packet(&mut self, packet: Bytes) -> Vec<Action> {
-		let result = self.verify_send_packet(&packet);
-		match result {
-			Ok(dest_ip) => {
-				if let Some(pub_key) = self.ip_pk.get(&dest_ip) {
-					if self.is_connect_open(pub_key) {
-						return vec![Action::SendPacketTo(packet, pub_key.clone())];
-					} else {
-						if let Some(peer) = self.peers.get_mut(pub_key) {
-							let queue = &mut peer.packet_queue;
-							if queue.len() >= MAX_PACKETS_IN_QUEUE {
-								queue.pop_front();
-							}
-							queue.push_back(packet);
-						}
-						return vec![Action::NoAction(LogEvent::ConnectionNotOpen)];
-					}
-				}
-				return vec![Action::NoAction(LogEvent::SendPacketError(SendPacketError::UnknownDestIp))];
-			}
+		let check_result = self.verify_send_packet(&packet);
+		let dest_ip = match check_result {
+			Ok(ip) => ip,
 			Err(e) => {
 				return vec![Action::NoAction(LogEvent::SendPacketError(e))];
 			}
+		};
+
+		let pub_key = match self.ip_pk.get(&dest_ip) {
+			Some(pk) => pk,
+			None => {
+				return vec![Action::NoAction(LogEvent::SendPacketError(SendPacketError::UnknownDestIp))];
+			}
+		};
+
+		if self.is_connect_open(pub_key) {
+			return vec![Action::SendPacketTo(packet, pub_key.clone())];
 		}
+
+		let peer = match self.peers.get_mut(pub_key) {
+			Some(peer) => peer,
+			// if there is no peer in the 'peers' table, then the verify_send_packet() invariant has been violated
+			None => {
+				return vec![Action::NoAction(LogEvent::InternalStateError)];
+			}
+		};
+
+		let mut actions: Vec<Action> = Vec::with_capacity(2);
+		let queue = &mut peer.packet_queue;
+		if queue.len() >= MAX_PACKETS_IN_QUEUE {
+			queue.pop_front();
+			actions.push(Action::NoAction(LogEvent::PacketQueueOverflow));
+		}
+		queue.push_back(packet);
+		actions.push(Action::NoAction(LogEvent::PacketBuffered));
+
+		actions
 	}
 
 	pub fn recv_packet(&self, packet: Bytes, from: &PublicKey) -> Vec<Action> {
