@@ -3,6 +3,7 @@ use std::collections::{HashMap, VecDeque};
 use std::net::Ipv4Addr;
 use std::fmt;
 use bytes::Bytes;
+use std::error::Error;
 
 const MAX_PACKETS_IN_QUEUE: usize = 1000;
 
@@ -119,6 +120,9 @@ impl fmt::Display for RecvPacketError {
 		}
 	}
 }
+
+impl Error for SendPacketError {}
+impl Error for RecvPacketError {}
 
 impl VpnCore {
 	pub fn new(ipv4_addr: Ipv4Addr, route_table: HashMap<Ipv4Addr, PublicKey>, max_packet_size: usize) -> VpnCore {
