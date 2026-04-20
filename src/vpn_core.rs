@@ -4,6 +4,7 @@ use std::net::Ipv4Addr;
 use std::fmt;
 use bytes::Bytes;
 use std::error::Error;
+use crate::packet::ipv4::{self, Ipv4Packet};
 
 const MAX_PACKETS_IN_QUEUE: usize = 1000;
 
@@ -47,10 +48,9 @@ pub enum SendPacketError {
 	IncorrectSrcIp,
 	UnknownDestIp,
 	MtuError,
-	IncorrectIpVersion,
 	IncorrectTTL,
-	TooSmallPacket,
-	BrokenPackage,
+	BrokenLength,
+	ParseError(ipv4::ParseError),
 }
 
 #[derive(Debug, PartialEq)]
@@ -58,10 +58,9 @@ pub enum RecvPacketError {
 	UnknownSrcIp,
 	IncorrectDestIp,
 	MtuError,
-	IncorrectIpVersion,
 	Spoofing,
-	TooSmallPacket,
-	BrokenPackage,
+	BrokenLength,
+	ParseError(ipv4::ParseError),
 	// Spam,
 }
 
@@ -72,7 +71,7 @@ impl fmt::Display for Action {
 			Action::DisconnectFromPeer(pub_key) => write!(f, "Disconnect from: {}", pub_key),
 			Action::SendPacketTo(packet, pub_key) => write!(f, "Send {} bytes to {}", packet.len(), pub_key),
             Action::WriteToTun(packet) => write!(f, "Write {} bytes to TUN", packet.len()),
-            Action::NoAction(reason) => write!(f, "Ignored -> {}", reason),
+            Action::NoAction(reason) => write!(f, "Info -> {}", reason),
 		}
 	}
 }
@@ -99,10 +98,9 @@ impl fmt::Display for SendPacketError {
 			SendPacketError::IncorrectSrcIp => write!(f, "source IP does not match the assigned tun IP"),
             SendPacketError::UnknownDestIp => write!(f, "destination IP is not found in the routing table"),
             SendPacketError::MtuError => write!(f, "packet length exceeds the MTU limit"),
-            SendPacketError::IncorrectIpVersion => write!(f, "unsupported IP version (only IPv4 is allowed)"),
             SendPacketError::IncorrectTTL => write!(f, "TTL is 0 or invalid"),
-            SendPacketError::TooSmallPacket => write!(f, "packet is too small to contain a valid IPv4 header"),
-            SendPacketError::BrokenPackage => write!(f, "incorrect length of packet"),
+            SendPacketError::BrokenLength => write!(f, "incorrect length of packet"),
+            SendPacketError::ParseError(e) => write!(f, "packet parse error: {}", e),
 		}
 	}
 }
@@ -113,10 +111,9 @@ impl fmt::Display for RecvPacketError {
 			RecvPacketError::UnknownSrcIp => write!(f, "source IP is not found in the routing table"),
             RecvPacketError::IncorrectDestIp => write!(f, "destination IP does not match local tun IP"),
             RecvPacketError::MtuError => write!(f, "received packet length exceeds the MTU limit"),
-            RecvPacketError::IncorrectIpVersion => write!(f, "unsupported IP version (only IPv4 is allowed)"),
             RecvPacketError::Spoofing => write!(f, "anti-spoofing triggered: Source IP does not match the sender's public key"),
-            RecvPacketError::TooSmallPacket => write!(f, "received packet is too small to contain a valid IPv4 header"),
-            RecvPacketError::BrokenPackage => write!(f, "incorrect length of packet"),
+            RecvPacketError::BrokenLength => write!(f, "incorrect length of packet"),
+            RecvPacketError::ParseError(e) => write!(f, "packet parse error: {}", e),
 		}
 	}
 }
@@ -236,72 +233,61 @@ impl VpnCore {
 	}
 
 	fn verify_send_packet(&self, packet: &Bytes) -> Result<Ipv4Addr, SendPacketError> {
-		if packet.len() < 20 {
-			return Err(SendPacketError::TooSmallPacket);
-		}
+		let ipv4_packet = match Ipv4Packet::new(packet) {
+			Ok(packet_struct) => packet_struct,
+			Err(e) => {
+				return Err(SendPacketError::ParseError(e));
+			}
+		};
 
-		let ip_version = packet[0] >> 4;
-		if ip_version != 4 {
-			return Err(SendPacketError::IncorrectIpVersion);
-		}
-
-		if packet.len() > self.max_packet_size {
+		if ipv4_packet.packet_length > self.max_packet_size {
 			return Err(SendPacketError::MtuError);
 		}
-
-		let total_length = ((packet[2] as usize) << 8) | (packet[3] as usize);
-		if packet.len() < total_length {
-			return Err(SendPacketError::BrokenPackage);
+		
+		if ipv4_packet.packet_length < ipv4_packet.total_length {
+			return Err(SendPacketError::BrokenLength);
 		}
 
-		let ttl = packet[8];
-		if ttl == 0 {
+		if ipv4_packet.ttl == 0 {
 			return Err(SendPacketError::IncorrectTTL);
 		}
 
-		let src_ip = Ipv4Addr::new(packet[12], packet[13], packet[14], packet[15]);
-		if src_ip != self.ipv4_addr {
+		if ipv4_packet.src_ip != self.ipv4_addr {
 			return Err(SendPacketError::IncorrectSrcIp);
 		}
 
-		let dest_ip = Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
-		if !self.is_neighbour_ipv4(&dest_ip) {
+		if !self.is_neighbour_ipv4(&ipv4_packet.dest_ip) {
 			return Err(SendPacketError::UnknownDestIp);
 		}
 
-		Ok(dest_ip)
+		Ok(ipv4_packet.dest_ip)
 	}
 
 	fn verify_recv_packet(&self, packet: &Bytes, from: &PublicKey) -> Result<(), RecvPacketError> {
-		if packet.len() < 20 {
-			return Err(RecvPacketError::TooSmallPacket);
-		}
+		let ipv4_packet = match Ipv4Packet::new(packet) {
+			Ok(packet_struct) => packet_struct,
+			Err(e) => {
+				return Err(RecvPacketError::ParseError(e));
+			}
+		};
 
-		let ip_version = packet[0] >> 4;
-		if ip_version != 4 {
-			return Err(RecvPacketError::IncorrectIpVersion);
-		}
-
-		if packet.len() > self.max_packet_size {
+		if ipv4_packet.packet_length > self.max_packet_size {
 			return Err(RecvPacketError::MtuError);
 		}
-
-		let total_length = ((packet[2] as usize) << 8) | (packet[3] as usize);
-		if packet.len() < total_length {
-			return Err(RecvPacketError::BrokenPackage);
+		
+		if ipv4_packet.packet_length < ipv4_packet.total_length {
+			return Err(RecvPacketError::BrokenLength);
 		}
 
-		let src_ip = Ipv4Addr::new(packet[12], packet[13], packet[14], packet[15]);
-		if !self.is_neighbour_ipv4(&src_ip) {
+		if !self.is_neighbour_ipv4(&ipv4_packet.src_ip) {
 			return Err(RecvPacketError::UnknownSrcIp);
 		}
 
-		let dest_ip = Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
-		if dest_ip != self.ipv4_addr {
+		if ipv4_packet.dest_ip != self.ipv4_addr {
 			return Err(RecvPacketError::IncorrectDestIp);
 		}
 
-		if self.route_table[&src_ip] != *from {
+		if self.route_table[&ipv4_packet.src_ip] != *from {
 			return Err(RecvPacketError::Spoofing);
 		}
 
