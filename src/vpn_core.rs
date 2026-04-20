@@ -10,7 +10,7 @@ struct VpnCore {
 	max_packet_size: usize,
 	ipv4_addr: Ipv4Addr,
 	peers: HashMap<PublicKey, PeerState>,
-	ip_pk: HashMap<Ipv4Addr, PublicKey>,
+	route_table: HashMap<Ipv4Addr, PublicKey>,
 }
 
 struct PeerState {
@@ -121,9 +121,9 @@ impl fmt::Display for RecvPacketError {
 }
 
 impl VpnCore {
-	pub fn new(ipv4_addr: Ipv4Addr, ip_pk: HashMap<Ipv4Addr, PublicKey>, max_packet_size: usize) -> VpnCore {
+	pub fn new(ipv4_addr: Ipv4Addr, route_table: HashMap<Ipv4Addr, PublicKey>, max_packet_size: usize) -> VpnCore {
 		let mut peers: HashMap<PublicKey, PeerState> = HashMap::new();
-		for (ip, pub_key) in &ip_pk {
+		for (ip, pub_key) in &route_table {
 			peers.insert(*pub_key, PeerState {
 				is_connected: false,
 				ipv4_addr: *ip,
@@ -133,18 +133,19 @@ impl VpnCore {
 		
 		VpnCore {
 			ipv4_addr,
-			ip_pk,
+			route_table,
 			max_packet_size,
 			peers
 		}
 	}
 
+	// Public API of the core for verifying an incoming connection before accepting it
 	pub fn verify_connection(&self, pub_key: &PublicKey) -> bool {
 		self.is_neighbour(pub_key)
 	}
 
 	pub fn on_peer_connected(&mut self, node: &PublicKey) -> Vec<Action> {
-		if !self.verify_connection(node) {
+		if !self.is_neighbour(node) {
 			return vec![Action::DisconnectFromPeer(node.clone())];
 		}
 
@@ -163,7 +164,7 @@ impl VpnCore {
 	}
 
 	pub fn on_peer_disconnected(&mut self, node: &PublicKey) -> Vec<Action> {
-		if !self.verify_connection(node) {
+		if !self.is_neighbour(node) {
 			return vec![Action::NoAction(LogEvent::UnknownPeer)];
 		}
 
@@ -178,7 +179,6 @@ impl VpnCore {
 		vec![Action::NoAction(LogEvent::InternalStateError)]
 	}
 
-	// packet - ipv4 packet
 	pub fn send_packet(&mut self, packet: Bytes) -> Vec<Action> {
 		let check_result = self.verify_send_packet(&packet);
 		let dest_ip = match check_result {
@@ -188,7 +188,7 @@ impl VpnCore {
 			}
 		};
 
-		let pub_key = match self.ip_pk.get(&dest_ip) {
+		let pub_key = match self.route_table.get(&dest_ip) {
 			Some(pk) => pk,
 			None => {
 				return vec![Action::NoAction(LogEvent::SendPacketError(SendPacketError::UnknownDestIp))];
@@ -201,7 +201,7 @@ impl VpnCore {
 
 		let peer = match self.peers.get_mut(pub_key) {
 			Some(peer) => peer,
-			// if there is no peer in the 'peers' table, then the verify_send_packet() invariant has been violated
+			// If there is no peer in the 'peers' table, then the verify_send_packet() invariant has been violated
 			None => {
 				return vec![Action::NoAction(LogEvent::InternalStateError)];
 			}
@@ -297,7 +297,7 @@ impl VpnCore {
 			return Err(RecvPacketError::IncorrectDestIp);
 		}
 
-		if self.ip_pk[&src_ip] != *from {
+		if self.route_table[&src_ip] != *from {
 			return Err(RecvPacketError::Spoofing);
 		}
 
@@ -309,7 +309,7 @@ impl VpnCore {
 	}
 
 	fn is_neighbour_ipv4(&self, node: &Ipv4Addr) -> bool {
-		self.ip_pk.contains_key(node)
+		self.route_table.contains_key(node)
 	}
 
 	fn is_connect_open(&self, node: &PublicKey) -> bool {
