@@ -6,18 +6,20 @@ use std::fs;
 use std::path::Path;
 use std::io;
 use std::str::FromStr;
+use std::fmt;
+use std::error::Error;
 
 const SUBNET: Ipv4Addr = Ipv4Addr::new(10, 67, 0, 0);
 const MASK: Ipv4Addr = Ipv4Addr::new(255, 255, 0, 0);
 const DEFAULT_LISTEN_PORT: u16 = 6767;
 const DEFAULT_MTU: u16 = 1500;
 
-struct Config {
-	secret_key: SecretKey,
-	node_ipv4: Ipv4Addr,
-	listen_port: u16,
-	mtu: u16,
-	peers: HashMap<Ipv4Addr, PublicKey>,
+pub struct Config {
+	pub secret_key: SecretKey,
+	pub node_ipv4: Ipv4Addr,
+	pub listen_port: u16,
+	pub mtu: u16,
+	pub peers: HashMap<Ipv4Addr, PublicKey>,
 }
 
 #[derive(Deserialize)]
@@ -36,7 +38,7 @@ struct Peer {
 }
 
 #[derive(Debug)]
-enum ConfigError {
+pub enum ConfigError {
 	OpenFileError(io::Error),
 	FormatParsingError(toml::de::Error),
 	SecretKeyError(SecretKeyError),
@@ -46,10 +48,35 @@ enum ConfigError {
 }
 
 #[derive(Debug)]
-enum SecretKeyError {
+pub enum SecretKeyError {
 	GetKeyError(io::Error),
 	IncorrectKey,
 }
+
+impl fmt::Display for ConfigError {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match self {
+			ConfigError::OpenFileError(e) => write!(f, "Open file error: {}", e),
+			ConfigError::FormatParsingError(e) => write!(f, "Incorrect config format: {}", e),
+			ConfigError::SecretKeyError(e) => write!(f, "Secret key error: {}", e),
+			ConfigError::Ipv4ParseError(e) => write!(f, "Ipv4 parse error: {}", e),
+			ConfigError::PublicKeyParseError(e) => write!(f, "Public key parse error: {}", e),
+			ConfigError::Ipv4NotInSubnet => write!(f, "Node Ipv4 not in correct subnet"),
+		}
+	}
+}
+
+impl fmt::Display for SecretKeyError {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match self {
+			SecretKeyError::GetKeyError(e) => write!(f, "can't get the key: {}", e),
+			SecretKeyError::IncorrectKey => write!(f, "given key isn't correct"),
+		}
+	}
+}
+
+impl Error for ConfigError {}
+impl Error for SecretKeyError {}
 
 impl Config {
 	pub fn from_file(path: impl AsRef<Path>) -> Result<Self, ConfigError> {
