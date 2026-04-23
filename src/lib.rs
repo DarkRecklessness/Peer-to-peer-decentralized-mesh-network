@@ -1,3 +1,3 @@
 mod vpn_core;
-// mod config;
+mod config;
 pub mod packet; 
