@@ -1,5 +1,5 @@
-use iroh::{SecretKey, PublicKey};
-use std::net::Ipv4Addr;
+use iroh::{self, SecretKey, PublicKey};
+use std::net::{self, Ipv4Addr};
 use std::collections::HashMap;
 use serde::Deserialize;
 use std::fs;
@@ -40,8 +40,8 @@ enum ConfigError {
 	OpenFileError(io::Error),
 	FormatParsingError(toml::de::Error),
 	SecretKeyError(SecretKeyError),
-	Ipv4ParseError,
-	PublicKeyParseError,
+	Ipv4ParseError(net::AddrParseError),
+	PublicKeyParseError(iroh::KeyParsingError),
 	Ipv4NotInSubnet,
 }
 
@@ -66,7 +66,7 @@ impl Config {
 			}
 		};
 
-		let secret_key = match Self::get_key(&config_toml.secret_key_path) {
+		let secret_key = match Self::get_secret_key(&config_toml.secret_key_path) {
 			Ok(sk) => sk,
 			Err(e) => {
 				return Err(ConfigError::SecretKeyError(e));
@@ -77,8 +77,8 @@ impl Config {
 
 		let node_ipv4 = match Ipv4Addr::from_str(&config_toml.node_ipv4) {
 			Ok(ip) => ip,
-			Err(_) => {
-				return Err(ConfigError::Ipv4ParseError);
+			Err(e) => {
+				return Err(ConfigError::Ipv4ParseError(e));
 			}
 		};
 		if (node_ipv4 & MASK) != SUBNET {
@@ -109,14 +109,14 @@ impl Config {
 		for peer in &cfg.peers {
 			let ipv4 = match Ipv4Addr::from_str(&peer.ipv4) {
 				Ok(ip) => ip,
-				Err(_) => {
-					return Err(ConfigError::Ipv4ParseError);
+				Err(e) => {
+					return Err(ConfigError::Ipv4ParseError(e));
 				}
 			};
 			let pub_key = match PublicKey::from_str(&peer.pub_key) {
 				Ok(pk) => pk,
-				Err(_) => {
-					return Err(ConfigError::PublicKeyParseError);
+				Err(e) => {
+					return Err(ConfigError::PublicKeyParseError(e));
 				}
 			};
 			peers.insert(ipv4, pub_key);
@@ -124,11 +124,11 @@ impl Config {
 		Ok(peers)
 	}
 
-	fn get_key(path: impl AsRef<Path>) -> Result<SecretKey, SecretKeyError> {
+	fn get_secret_key(path: impl AsRef<Path>) -> Result<SecretKey, SecretKeyError> {
         let data = match fs::read(&path) {
  			Ok(data) => data,
  			Err(e) if e.kind() == io::ErrorKind::NotFound => {
- 				match Self::gen_key(path) {
+ 				match Self::gen_secret_key(path) {
  					Ok(sec_key) => {
  						return Ok(sec_key);
  					}
@@ -149,7 +149,7 @@ impl Config {
         Ok(SecretKey::from_bytes(data.as_array::<32>().unwrap()))
 	}
 
-	fn gen_key(path: impl AsRef<Path>) -> Result<SecretKey, io::Error> {
+	fn gen_secret_key(path: impl AsRef<Path>) -> Result<SecretKey, io::Error> {
 		let secret_key = SecretKey::generate();
 		fs::write(path, secret_key.to_bytes())?;
 		Ok(secret_key)
