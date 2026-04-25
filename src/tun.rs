@@ -79,13 +79,13 @@ impl Tun {
 			let tun_device = match tun::create_as_async(&self.config) {
 				Ok(ad) => ad,
 				Err(e) => {
-					let _ = self.tx_logs.send(TunEvent::InitError(e)).await;
+					let _ = self.tx_logs.try_send(TunEvent::InitError(e));
 					tokio::time::sleep(Duration::from_secs(2)).await;
 					continue;
 				}
 			};
 
-			let _ = self.tx_logs.send(TunEvent::Info("Tun interface is up".to_string())).await;
+			let _ = self.tx_logs.try_send(TunEvent::Info("Tun interface is up".to_string()));
 
 			let mut buf = vec![0u8; self.mtu as usize];
 
@@ -95,14 +95,14 @@ impl Tun {
 						match result {
 							// check https://docs.rs/tokio/1.51.1/tokio/io/trait.AsyncReadExt.html#method.read
 							Ok(0) => {
-								let _ = self.tx_logs.send(TunEvent::ReconnectRequired).await;
+								let _ = self.tx_logs.try_send(TunEvent::ReconnectRequired);
 								break;
 							}
 							Ok(size) => {
 								if let Err(_) = self.tx_to_coord.send(Bytes::copy_from_slice(&buf[..size])).await {
-									let _ = self.tx_logs.send(TunEvent::FatalError(
+									let _ = self.tx_logs.try_send(TunEvent::FatalError(
 										"The channel for sending packets to coordinator was closed".to_string()
-									)).await;
+									));
 									return;
 								}
 							}
@@ -110,15 +110,15 @@ impl Tun {
 								let action = classify_tun_error(&e);
 								match action {
 									TunEvent::ReconnectRequired => {
-										let _ = self.tx_logs.send(TunEvent::ReconnectRequired).await;
+										let _ = self.tx_logs.try_send(TunEvent::ReconnectRequired);
 										break;
 									}
 									TunEvent::DropPacket => {
-										// let _ = self.tx_logs.send(TunEvent::DropPacket).await;
+										let _ = self.tx_logs.try_send(TunEvent::DropPacket);
 										continue;
 									}
 									TunEvent::FatalError(msg) => {
-										let _ = self.tx_logs.send(TunEvent::FatalError(msg)).await;
+										let _ = self.tx_logs.try_send(TunEvent::FatalError(msg));
 										return;
 									}
 									_ => {}
@@ -136,15 +136,15 @@ impl Tun {
 										let action = classify_tun_error(&e);
 										match action {
 											TunEvent::ReconnectRequired => {
-												let _ = self.tx_logs.send(TunEvent::ReconnectRequired).await;
+												let _ = self.tx_logs.try_send(TunEvent::ReconnectRequired);
 												break;
 											}
 											TunEvent::DropPacket => {
-												// let _ = self.tx_logs.send(TunEvent::DropPacket).await;
+												let _ = self.tx_logs.try_send(TunEvent::DropPacket);
 												continue;
 											}
 											TunEvent::FatalError(msg) => {
-												let _ = self.tx_logs.send(TunEvent::FatalError(msg)).await;
+												let _ = self.tx_logs.try_send(TunEvent::FatalError(msg));
 												return;
 											}
 											_ => {}
@@ -153,9 +153,9 @@ impl Tun {
 								}
 							}
 							None => {
-								let _ = self.tx_logs.send(TunEvent::FatalError(
+								let _ = self.tx_logs.try_send(TunEvent::FatalError(
 									"The channel for receiving packets from the coordinator was closed".to_string()
-								)).await;
+								));
 								return;
 							}
 						}
