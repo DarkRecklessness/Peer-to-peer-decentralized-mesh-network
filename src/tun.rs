@@ -5,8 +5,6 @@ use std::net::Ipv4Addr;
 use tun::Configuration;
 use core::time::Duration;
 
-const TUN_NAME: &str = "iroh_vpn_tun";
-
 pub struct Tun {
 	mtu: u16,
 	config: Configuration,
@@ -53,7 +51,7 @@ fn classify_tun_error(err: &Error) -> TunEvent {
 }
 
 impl Tun {
-	pub fn new(mtu: u16, tun_ip: Ipv4Addr, tun_subnet: Ipv4Addr, 
+	pub fn new(tun_name: &str, mtu: u16, tun_ip: Ipv4Addr, tun_subnet: Ipv4Addr, 
 			   tx_to_coord: Sender<Bytes>, rx_from_coord: Receiver<Bytes>, tx_logs: Sender<TunEvent>) 
 		-> Self {
 
@@ -62,7 +60,7 @@ impl Tun {
 		config.mtu(mtu)
 		      .address(tun_ip)
 		      .netmask(tun_subnet)
-		      .tun_name(TUN_NAME)
+		      .tun_name(tun_name)
 		      .up();
 
 		Tun {
@@ -203,6 +201,7 @@ mod tests {
         let (tx_logs, _) = mpsc::channel(1);
 
         let tun = Tun::new(
+        	"iroh_vpn_tun",
             1420,
             Ipv4Addr::new(10, 0, 0, 1),
             Ipv4Addr::new(255, 255, 255, 0),
@@ -222,6 +221,7 @@ mod tests {
         let (tx_logs, mut rx_logs) = mpsc::channel(100);
 
         let tun = Tun::new(
+        	"iroh_vpn_tun",
             1500,
             Ipv4Addr::new(10, 200, 200, 1), 
             Ipv4Addr::new(255, 255, 255, 0),
@@ -282,6 +282,7 @@ mod tests {
         let (tx_logs, mut rx_logs) = mpsc::channel(100);
 
         let tun = Tun::new(
+        	"iroh_vpn_tun",
             1500,
             Ipv4Addr::new(10, 201, 201, 1),
             Ipv4Addr::new(255, 255, 255, 0),
