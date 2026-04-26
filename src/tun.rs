@@ -1,16 +1,16 @@
-use tokio::sync::mpsc::{Sender, Receiver};
+use tokio::sync::{mpsc, oneshot};
+use tokio::io::{ReadHalf, WriteHalf, AsyncWriteExt, AsyncReadExt};
 use bytes::Bytes;
 use std::io::{Error, ErrorKind};
 use std::net::Ipv4Addr;
-use tun::Configuration;
+use tun::{Configuration, AsyncDevice};
 use core::time::Duration;
 
 pub struct Tun {
-	mtu: u16,
 	config: Configuration,
-	tx_to_coord: Sender<Bytes>,
-	rx_from_coord: Receiver<Bytes>,
-	tx_logs: Sender<TunEvent>,
+	tx_to_coord: mpsc::Sender<Bytes>,
+	rx_from_coord: mpsc::Receiver<Bytes>,
+	tx_logs: mpsc::Sender<TunEvent>,
 }  
 
 #[derive(Debug)]
@@ -51,10 +51,15 @@ fn classify_tun_error(err: &Error) -> TunEvent {
 }
 
 impl Tun {
-	pub fn new(tun_name: &str, mtu: u16, tun_ip: Ipv4Addr, tun_subnet: Ipv4Addr, 
-			   tx_to_coord: Sender<Bytes>, rx_from_coord: Receiver<Bytes>, tx_logs: Sender<TunEvent>) 
-		-> Self {
-
+	pub fn new(tun_name: &str, 
+			   mtu: u16,
+			   tun_ip: Ipv4Addr, 
+			   tun_subnet: Ipv4Addr, 
+			   tx_to_coord: mpsc::Sender<Bytes>, 
+			   rx_from_coord: mpsc::Receiver<Bytes>, 
+			   tx_logs: mpsc::Sender<TunEvent>) 
+		-> Self
+	{
 		let mut config = Configuration::default();
 		
 		config.mtu(mtu)
@@ -64,7 +69,6 @@ impl Tun {
 		      .up();
 
 		Tun {
-			mtu,
 			config,
 			tx_to_coord,
 			rx_from_coord,
@@ -85,81 +89,194 @@ impl Tun {
 
 			let _ = self.tx_logs.try_send(TunEvent::Info("Tun interface is up".to_string()));
 
-			let mut buf = vec![0u8; self.mtu as usize];
+			let (tun_device_reader, tun_device_writer) = tokio::io::split(tun_device);
+			
+			let (tx_stop_signal_reader, rx_stop_signal_reader) = oneshot::channel();
+			let (tx_stop_signal_writer, rx_stop_signal_writer) = oneshot::channel();
+			let (tx_end_data_reader, mut rx_end_data_reader) = oneshot::channel();
+			let (tx_end_data_writer, mut rx_end_data_writer) = oneshot::channel();
 
-			loop {
-				tokio::select! {
-					result = tun_device.recv(&mut buf[..]) => {
-						match result {
-							// check https://docs.rs/tokio/1.51.1/tokio/io/trait.AsyncReadExt.html#method.read
-							Ok(0) => {
-								let _ = self.tx_logs.try_send(TunEvent::ReconnectRequired);
-								break;
-							}
-							Ok(size) => {
-								if let Err(_) = self.tx_to_coord.send(Bytes::copy_from_slice(&buf[..size])).await {
-									let _ = self.tx_logs.try_send(TunEvent::FatalError(
-										"The channel for sending packets to coordinator was closed".to_string()
-									));
-									return;
-								}
-							}
-							Err(e) => {
-								let action = classify_tun_error(&e);
-								match action {
-									TunEvent::ReconnectRequired => {
-										let _ = self.tx_logs.try_send(TunEvent::ReconnectRequired);
-										break;
-									}
-									TunEvent::DropPacket => {
-										let _ = self.tx_logs.try_send(TunEvent::DropPacket);
-										continue;
-									}
-									TunEvent::FatalError(msg) => {
-										let _ = self.tx_logs.try_send(TunEvent::FatalError(msg));
-										return;
-									}
-									_ => {}
-								}
-							}
-						}	
-					}
+			tokio::spawn(Self::worker_tun_reader(
+				tun_device_reader,
+				self.tx_to_coord.clone(),
+				self.tx_logs.clone(),
+				rx_stop_signal_reader,
+				tx_end_data_reader
+			));
 
-					opt = self.rx_from_coord.recv() => {
-						match opt {
-							Some(packet) => {
-								match tun_device.send(&packet[..]).await {
-									Ok(_) => continue,
-									Err(e) => {
-										let action = classify_tun_error(&e);
-										match action {
-											TunEvent::ReconnectRequired => {
-												let _ = self.tx_logs.try_send(TunEvent::ReconnectRequired);
-												break;
-											}
-											TunEvent::DropPacket => {
-												let _ = self.tx_logs.try_send(TunEvent::DropPacket);
-												continue;
-											}
-											TunEvent::FatalError(msg) => {
-												let _ = self.tx_logs.try_send(TunEvent::FatalError(msg));
-												return;
-											}
-											_ => {}
+			tokio::spawn(Self::worker_tun_writer(
+				tun_device_writer,
+				self.rx_from_coord,
+				self.tx_logs.clone(),
+				rx_stop_signal_writer,
+				tx_end_data_writer
+			));
+
+			tokio::select! {
+				// don't own rx_end_data_reader for another branch due to borrow checker
+				result = &mut rx_end_data_reader => { 
+					match result {
+						Ok(event) => {
+							let _ = tx_stop_signal_writer.send(());
+
+							match rx_end_data_writer.await {
+								Ok((rx_from_coord, _)) => {
+									self.rx_from_coord = rx_from_coord;
+
+									// main code here
+									match event {
+										TunEvent::ReconnectRequired => {
+											let _ = self.tx_logs.send(TunEvent::ReconnectRequired).await;
+											continue;
 										}
+										TunEvent::FatalError(msg) => {
+											let _ = self.tx_logs.send(TunEvent::FatalError(msg)).await;
+											return;
+										}
+										_ => {} // impossible
 									}
 								}
+								Err(_) => {return;} //idk
 							}
-							None => {
-								let _ = self.tx_logs.try_send(TunEvent::FatalError(
-									"The channel for receiving packets from the coordinator was closed".to_string()
+						}
+						Err(_) => {return;} // idk
+					}
+				}
+
+				// don't own rx_end_data_writer for another branch due to borrow checker
+				result = &mut rx_end_data_writer => {
+					match result {
+						Ok((rx_from_coord, event)) => {
+							self.rx_from_coord = rx_from_coord;
+							let _ = tx_stop_signal_reader.send(());
+
+							match rx_end_data_reader.await {
+								Ok(_) => {
+									// main code here
+									match event {
+										TunEvent::ReconnectRequired => {
+											let _ = self.tx_logs.send(TunEvent::ReconnectRequired).await;
+											continue;
+										}
+										TunEvent::FatalError(msg) => {
+											let _ = self.tx_logs.send(TunEvent::FatalError(msg)).await;
+											return;
+										}
+										_ => {} // impossible
+									}
+								}
+								Err(_) => {return;} //idk
+							}
+						}
+						Err(_) => {return;} // idk
+					}
+				}
+			}
+		}
+	}
+
+	async fn worker_tun_reader(mut tun_device: ReadHalf<AsyncDevice>, 
+							   tx_to_coord: mpsc::Sender<Bytes>, 
+							   tx_logs: mpsc::Sender<TunEvent>, 
+							   mut rx_stop_signal: oneshot::Receiver<()>,
+							   tx_end_data: oneshot::Sender<TunEvent>)
+	{
+		let mut buf = vec![0u8; 1 << 16];
+		loop {
+			tokio::select! {
+				// don't own rx_stop_signal for loop safety exec due to borrow checker
+				_ = &mut rx_stop_signal => {
+					let _ = tx_end_data.send(TunEvent::Info("nothing".to_string()));
+					return;
+				}
+
+				result = tun_device.read(&mut buf[..]) => {
+					match result {
+						// check https://docs.rs/tokio/1.51.1/tokio/io/trait.AsyncReadExt.html#method.read
+						Ok(0) => {
+							let _ = tx_end_data.send(TunEvent::ReconnectRequired);
+							return;
+						}
+						Ok(size) => {
+							if let Err(_) = tx_to_coord.send(Bytes::copy_from_slice(&buf[..size])).await {
+								let _ = tx_end_data.send(TunEvent::FatalError(
+									"The channel for sending packets to coordinator was closed".to_string()
 								));
 								return;
 							}
 						}
+						Err(e) => {
+							let action = classify_tun_error(&e);
+							match action {
+								TunEvent::ReconnectRequired => {
+									let _ = tx_end_data.send(TunEvent::ReconnectRequired);
+									return;
+								}
+								TunEvent::DropPacket => {
+									let _ = tx_logs.try_send(TunEvent::DropPacket);
+									continue;
+								}
+								TunEvent::FatalError(msg) => {
+									let _ = tx_end_data.send(TunEvent::FatalError(msg));
+									return;
+								}
+								_ => {}
+							}
+						}
+					}	
+				}
+			}
+		}
+	}
+
+	async fn worker_tun_writer(mut tun_device: WriteHalf<AsyncDevice>, 
+							   mut rx_from_coord: mpsc::Receiver<Bytes>, 
+							   tx_logs: mpsc::Sender<TunEvent>, 
+							   mut rx_stop_signal: oneshot::Receiver<()>, 
+							   tx_end_data: oneshot::Sender<(mpsc::Receiver<Bytes>, TunEvent)>)
+	{
+		loop {
+			tokio::select! {
+				// don't own rx_stop_signal for loop safety exec due to borrow checker
+				_ = &mut rx_stop_signal => {
+					let _ = tx_end_data.send((rx_from_coord, TunEvent::Info("nothing".to_string())));
+					return;
+				}
+
+				opt = rx_from_coord.recv() => {
+					match opt {
+						Some(packet) => {
+							match tun_device.write(&packet[..]).await {
+								Ok(_) => continue,
+								Err(e) => {
+									let action = classify_tun_error(&e);
+									match action {
+										TunEvent::ReconnectRequired => {
+											let _ = tx_end_data.send((rx_from_coord, TunEvent::ReconnectRequired));
+											return;
+										}
+										TunEvent::DropPacket => {
+											let _ = tx_logs.try_send(TunEvent::DropPacket);
+											continue;
+										}
+										TunEvent::FatalError(msg) => {
+											let _ = tx_end_data.send((rx_from_coord, TunEvent::FatalError(msg)));
+											return;
+										}
+										_ => {}
+									}
+								}
+							}
+						}
+						None => {
+							let _ = tx_end_data.send((rx_from_coord, TunEvent::FatalError(
+								"The channel for receiving packets from the coordinator was closed".to_string()
+							)));
+							return;
+						}
 					}
 				}
-			}			
+			}
 		}
 	}
 }
@@ -192,25 +309,6 @@ mod tests {
         } else {
             panic!("Expected FatalError");
         }
-    }
-
-    #[test]
-    fn test_tun_new() {
-        let (tx_coord, _) = mpsc::channel(1);
-        let (_, rx_coord) = mpsc::channel(1);
-        let (tx_logs, _) = mpsc::channel(1);
-
-        let tun = Tun::new(
-        	"iroh_vpn_tun",
-            1420,
-            Ipv4Addr::new(10, 0, 0, 1),
-            Ipv4Addr::new(255, 255, 255, 0),
-            tx_coord,
-            rx_coord,
-            tx_logs,
-        );
-
-        assert_eq!(tun.mtu, 1420);
     }
 
     #[tokio::test]
