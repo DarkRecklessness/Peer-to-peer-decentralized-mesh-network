@@ -123,7 +123,6 @@ impl Tun {
 								Ok((rx_from_coord, _)) => {
 									self.rx_from_coord = rx_from_coord;
 
-									// main code here
 									match event {
 										TunEvent::ReconnectRequired => {
 											let _ = self.tx_logs.send(TunEvent::ReconnectRequired).await;
@@ -136,10 +135,20 @@ impl Tun {
 										_ => {} // impossible
 									}
 								}
-								Err(_) => {return;} //idk
+								Err(_) => {
+									let _ = self.tx_logs.send(TunEvent::FatalError(
+										"Oneshot sync channels unexpected error".to_string()
+									)).await;
+									return;
+								}
 							}
 						}
-						Err(_) => {return;} // idk
+						Err(_) => {
+							let _ = self.tx_logs.send(TunEvent::FatalError(
+								"Oneshot sync channels unexpected error".to_string()
+							)).await;
+							return;
+						}
 					}
 				}
 
@@ -152,7 +161,6 @@ impl Tun {
 
 							match rx_end_data_reader.await {
 								Ok(_) => {
-									// main code here
 									match event {
 										TunEvent::ReconnectRequired => {
 											let _ = self.tx_logs.send(TunEvent::ReconnectRequired).await;
@@ -165,10 +173,20 @@ impl Tun {
 										_ => {} // impossible
 									}
 								}
-								Err(_) => {return;} //idk
+								Err(_) => {
+									let _ = self.tx_logs.send(TunEvent::FatalError(
+										"Oneshot sync channels unexpected error".to_string()
+									)).await;
+									return;
+								}
 							}
 						}
-						Err(_) => {return;} // idk
+						Err(_) => {
+							let _ = self.tx_logs.send(TunEvent::FatalError(
+								"Oneshot sync channels unexpected error".to_string()
+							)).await;
+							return;	
+						}
 					}
 				}
 			}
