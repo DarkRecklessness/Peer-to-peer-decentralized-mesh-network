@@ -1,10 +1,11 @@
 use iroh::{SecretKey, PublicKey};
-use iroh::endpoint::{Endpoint, presets, Connection, InvalidSocketAddr, BindError, IncomingAddr::Relay};
+use iroh::endpoint::{Endpoint, presets, Connection, InvalidSocketAddr, BindError, IncomingAddr::Relay, SendDatagramError};
 use bytes::Bytes;
 use tokio::sync::mpsc;
 use std::collections::{HashSet, HashMap};
 use tokio::time::{sleep, Duration};
 use tokio::task::JoinHandle;
+use tracing::{info, warn, error, debug, trace, instrument};
 
 const ALPN: &[u8] = b"iroh_vpn";
 const CHANNEL_CAPACITY: usize = 8192;
@@ -97,10 +98,14 @@ impl Iroh {
 					match result {
 						Some(event) => {
 							if self.handle_conn_event(event).await.is_err() {
+								error!("Internal error in iroh manager");
 								return;
 							}
 						}
-						None => {} // handle this
+						None => {
+							error!("Channel between iroh manager and tasks was closed");
+							return;
+						}
 					}
 				}
 
@@ -109,7 +114,10 @@ impl Iroh {
 						Some(event) => {
 							self.handle_core_event(event).await;
 						}
-						None => {} // handle this
+						None => {
+							error!("Channel between iroh manager and coordinator was closed");
+							return;
+						}
 					}
 				}
 			}
@@ -124,6 +132,7 @@ impl Iroh {
 			ConnectionEvent::IncomingConnection(conn) => {
 				if let Some(Some(ConnectionState {task: old_task, ..})) = self.state_table.get(&conn.remote_id()) {
 					old_task.abort();
+					info!("New incoming connection replace previous task");
 				}
 
 				self.init_connection(conn).await;
@@ -155,10 +164,16 @@ impl Iroh {
 		match event {
 			CoreEvent::SendPacketTo(packet, to) => {
 				if let Some(Some(ConnectionState {tx_packet, ..})) = self.state_table.get(&to) {
-					let _ = tx_packet.send(packet).await;
+					if let Err(e) = tx_packet.try_send(packet) {
+					    info!(to = %to, "Peer queue is full, dropping packet");
+					}
+					return;
 				}
-				// log packet drop?
+				// it is possible when the core didn't get the message about disconnect in time
+				debug!(size = packet.len(), "Drop packet from tun");
 			}
+			
+			// impossible in current implementation of iroh + core connect managment 
 			CoreEvent::DisconnectFromPeer(pub_key) => {
 				if let Some(Some(ConnectionState {task: old_task, ..})) = self.state_table.get(&pub_key) {
 					old_task.abort();
@@ -205,22 +220,25 @@ impl Iroh {
 		}
 	}
 
+	#[instrument(skip_all, fields(peer = %connection.remote_id()))]
 	async fn on_peer_connected(tx_packet_channel: mpsc::Sender<IrohEvent>,
 							   mut rx_packet_channel: mpsc::Receiver<Bytes>,
 							   connection: Connection,
 							   tx_to_manager: mpsc::Sender<ConnectionEvent>) 
 	{
-		// TODO: tracing logs
+		info!("Task started");
 		loop {
 			tokio::select! {
 				result = connection.read_datagram() => {
 					match result {
 						Ok(packet) => {
+							trace!(size = packet.len(), "Received packet from peer");
 							let _ = tx_packet_channel.send(
 								IrohEvent::RecvPacketFrom(packet, connection.remote_id())
 							).await;
 						}
-						Err(_err) => { // log this, lost connection
+						Err(e) => {
+							info!(error = %e, "Connection closed by remote peer or network error");
 							let _ = tx_to_manager.send(
 								ConnectionEvent::Disconnected(connection.remote_id())
 							).await;
@@ -232,12 +250,19 @@ impl Iroh {
 				result = rx_packet_channel.recv() => {
 					match result {
 						Some(packet) => {
-							match connection.send_datagram(packet) {
-								Ok(()) => {},
-								Err(_) => {} // handle different errors
-							}
+							trace!(size = packet.len(), "Received packet from tun");
+							if let Err(e) = connection.send_datagram(packet) {
+	                            debug!(error = %e, "Failed to send outgoing packet");
+	                            match e {
+	                            	SendDatagramError::TooLarge => {},
+	                            	_ => return,
+	                            }
+	                        }
 						}
-						None => {} // manager dead, handle this and logging
+						None => {
+							warn!("Packet channel with manager closed, shutting down session task");
+	                        return;
+						}
 					}
 				}
 			}
@@ -245,51 +270,58 @@ impl Iroh {
 	}
 
 	// 'to' must be in 'peers', 'endpoint.pub_key' must be greater than 'to'
+	#[instrument(skip_all, fields(peer = %to))]
 	async fn connect_to_peer(endpoint: Endpoint, to: PublicKey, tx_to_manager: mpsc::Sender<ConnectionEvent>) {
+		info!("Starting connection attempts");
 		loop {
-			// TODO: log error / success
 			match endpoint.connect(to, ALPN).await {
 				Ok(conn) => {
+					info!("Successfully connected");
 					let _ = tx_to_manager.send(ConnectionEvent::OutgoingConnection(conn)).await;
 					return;
 				}
-				Err(_) => {
+				Err(e) => {
+					debug!(error = %e, "Connection failed, retrying in 1s");
 					sleep(Duration::from_secs(1)).await;
 				}
 			}
 		}
 	}
 
+	#[instrument(skip_all)]
 	async fn accept_connections(endpoint: Endpoint, 
 							    peers: HashSet<PublicKey>, 
 							    tx_to_manager: mpsc::Sender<ConnectionEvent>) 
 	{
+		info!("Started listening for incoming connections");
 		while let Some(incoming) = endpoint.accept().await {
 			let pub_key = match incoming.remote_addr() {
 				Relay {endpoint_id: pub_key, ..} => pub_key,
 				_ => { // weird
-					let _ = tx_to_manager.send(ConnectionEvent::InternalError).await;
-					return;
+					warn!("Received incoming connection from non-relay address");
+					continue;
+					//let _ = tx_to_manager.send(ConnectionEvent::InternalError).await;
+					//return;
 				}
 			};
 
-			// log failed conn
 			if !peers.contains(&pub_key) || pub_key < endpoint.id() {
+				debug!(peer = %pub_key, "Rejected connection (not in peers list or order check failed)");
 				continue;
 			}
 
-			// TODO: log error / successful connection
 			match incoming.accept() {
 				Ok(ac) => {
 					match ac.await {
-						Ok(conn) => { // log
+						Ok(conn) => {
+							info!(peer = %pub_key, "Accepted new incoming connection");
 							let _ = tx_to_manager.send(ConnectionEvent::IncomingConnection(conn)).await;
 							continue;
 						}
-						Err(_) => {} // log
+						Err(e) => debug!(error = %e, peer = %pub_key, "Connecting error"),
 					}
 				}
-				Err(_) => {} // log
+				Err(e) => debug!(error = %e, peer = %pub_key, "Failed to accept incoming stream"),
 			}
 		}
 	}
