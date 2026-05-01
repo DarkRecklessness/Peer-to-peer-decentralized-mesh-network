@@ -4,6 +4,7 @@ use bytes::Bytes;
 use tokio::sync::mpsc;
 use std::collections::{HashSet, HashMap};
 use tokio::time::{sleep, Duration};
+use tokio::task::JoinHandle;
 
 const ALPN: &[u8] = b"iroh_vpn";
 const CHANNEL_CAPACITY: usize = 8192;
@@ -12,12 +13,14 @@ pub struct Iroh {
 	endpoint: Endpoint,
 	tx_to_coord: mpsc::Sender<IrohEvent>,
 	rx_from_coord: mpsc::Receiver<CoreEvent>,
+	tx_to_manager: mpsc::Sender<ConnectionEvent>,
+	rx_from_tasks: mpsc::Receiver<ConnectionEvent>,
 	state_table: HashMap<PublicKey, Option<ConnectionState>>,
 	peers: HashSet<PublicKey>,
 }
 
 struct ConnectionState {
-	connection: Connection,
+	task: JoinHandle<()>,
 	tx_packet: mpsc::Sender<Bytes>,
 }
 
@@ -45,7 +48,7 @@ enum ConnectionEvent {
 	OutgoingConnection(Connection),
 	IncomingConnection(Connection),
 	Disconnected(PublicKey),
-	InternalError, // bad idea
+	InternalError,
 }
 
 impl Iroh {
@@ -71,25 +74,31 @@ impl Iroh {
 		    .bind()
 		    .await
 		    .map_err(InitError::BuildError)?;
+
+		let (tx_to_manager, rx_from_tasks) = mpsc::channel(CHANNEL_CAPACITY);    
 		
 		Ok(Iroh {
 			endpoint,
 			tx_to_coord,
 			rx_from_coord,
+			tx_to_manager,
+			rx_from_tasks,
 			state_table,
 			peers,
 		})
 	}
 
 	pub async fn run(mut self) {
-		let mut rx_from_tasks = self.init();		
+		self.init();		
 		// event loop
 		loop {
 			tokio::select! {
-				result = rx_from_tasks.recv() => {
+				result = self.rx_from_tasks.recv() => {
 					match result {
 						Some(event) => {
-							self.handle_conn_event(event).await;
+							if self.handle_conn_event(event).await.is_err() {
+								return;
+							}
 						}
 						None => {} // handle this
 					}
@@ -107,20 +116,83 @@ impl Iroh {
 		}
 	}
 
-	async fn handle_conn_event(&mut self, event: ConnectionEvent) {
-		// TODO
+	async fn handle_conn_event(&mut self, event: ConnectionEvent) -> Result<(), ()> {
+		match event {
+			ConnectionEvent::OutgoingConnection(conn) => {
+				self.init_connection(conn).await;
+			}
+			ConnectionEvent::IncomingConnection(conn) => {
+				if let Some(Some(ConnectionState {task: old_task, ..})) = self.state_table.get(&conn.remote_id()) {
+					old_task.abort();
+				}
+
+				self.init_connection(conn).await;
+			}
+			ConnectionEvent::Disconnected(pub_key) => {
+				let _ = self.tx_to_coord.send(
+					IrohEvent::DisconnectedFromPeer(pub_key.clone())
+				).await;
+				self.state_table.insert(pub_key.clone(), None);
+
+				if self.endpoint.id() < pub_key || !self.state_table.contains_key(&pub_key) {
+					return Ok(());
+				}
+				tokio::spawn(
+					Self::connect_to_peer(self.endpoint.clone(),
+										  pub_key,
+										  self.tx_to_manager.clone())
+				);
+			}
+			ConnectionEvent::InternalError => {
+				return Err(());
+			}
+		}
+
+		Ok(())
 	}
 
 	async fn handle_core_event(&mut self, event: CoreEvent) {
-		// TODO
+		match event {
+			CoreEvent::SendPacketTo(packet, to) => {
+				if let Some(Some(ConnectionState {tx_packet, ..})) = self.state_table.get(&to) {
+					let _ = tx_packet.send(packet).await;
+				}
+				// log packet drop?
+			}
+			CoreEvent::DisconnectFromPeer(pub_key) => {
+				if let Some(Some(ConnectionState {task: old_task, ..})) = self.state_table.get(&pub_key) {
+					old_task.abort();
+				}
+
+				let _ = self.state_table.remove(&pub_key); // incorrect state from core
+
+				let _ = self.tx_to_coord.send(
+					IrohEvent::DisconnectedFromPeer(pub_key)
+				).await;
+			}
+		}
+	}
+
+	async fn init_connection(&mut self, conn: Connection) {
+		let _ = self.tx_to_coord.send(IrohEvent::ConnectedToPeer(conn.remote_id())).await;
+		let (tx_packet, rx_packet_channel) = mpsc::channel(CHANNEL_CAPACITY);
+		let task = tokio::spawn(
+			Self::on_peer_connected(self.tx_to_coord.clone(),
+									rx_packet_channel,
+									conn.clone(),
+									self.tx_to_manager.clone())
+		);
+		self.state_table.insert(conn.remote_id(), Some(ConnectionState {
+			task,
+			tx_packet,
+		}));
 	}
 	
-	fn init(&mut self) -> mpsc::Receiver<ConnectionEvent> {
-		let (tx_to_manager, mut rx_from_tasks) = mpsc::channel(CHANNEL_CAPACITY);
+	fn init(&mut self) {
 		tokio::spawn(
 			Self::accept_connections(self.endpoint.clone(), 
 									 std::mem::take(&mut self.peers), 
-									 tx_to_manager.clone())
+									 self.tx_to_manager.clone())
 		);
 		for (pub_key, _) in &self.state_table {
 			if *pub_key > self.endpoint.id() {
@@ -128,11 +200,9 @@ impl Iroh {
 			}
 
 			tokio::spawn(
-				Self::connect_to_peer(self.endpoint.clone(), pub_key.clone(), tx_to_manager.clone())	
+				Self::connect_to_peer(self.endpoint.clone(), pub_key.clone(), self.tx_to_manager.clone())	
 			);
 		}
-
-		rx_from_tasks
 	}
 
 	async fn on_peer_connected(tx_packet_channel: mpsc::Sender<IrohEvent>,
@@ -147,13 +217,13 @@ impl Iroh {
 					match result {
 						Ok(packet) => {
 							let _ = tx_packet_channel.send(
-								IrohEvent::RecvPacketFrom(packet, connection.remote_id()
-							)).await;
+								IrohEvent::RecvPacketFrom(packet, connection.remote_id())
+							).await;
 						}
 						Err(_err) => { // log this, lost connection
 							let _ = tx_to_manager.send(
-								ConnectionEvent::Disconnected(connection.remote_id()
-							)).await;
+								ConnectionEvent::Disconnected(connection.remote_id())
+							).await;
 							return;
 						}
 					}
