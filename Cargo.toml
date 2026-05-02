@@ -11,3 +11,7 @@ rand = "0.9.2"
 bytes = "1.11.1"
 toml = "1.1.2"
 serde = "1.0.228"
+tun = { version = "0.8.7", features = ["async"] }
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
