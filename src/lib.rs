@@ -1,5 +1,5 @@
 mod vpn_core;
-// mod config;
+mod config;
 pub mod packet; 
 pub mod tun;
 pub mod iroh;
