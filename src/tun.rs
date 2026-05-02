@@ -5,19 +5,19 @@ use std::io::{Error, ErrorKind};
 use std::net::Ipv4Addr;
 use tun::{Configuration, AsyncDevice};
 use core::time::Duration;
+use tracing::{info, warn, error, debug, trace, instrument};
 
 pub struct Tun {
 	config: Configuration,
 	tx_to_coord: mpsc::Sender<Bytes>,
 	rx_from_coord: mpsc::Receiver<Bytes>,
-	tx_logs: mpsc::Sender<TunEvent>,
 }  
 
 #[derive(Debug)]
 pub enum TunEvent {
 	Info(String),
 	InitError(tun::Error),
-    FatalError(String),
+    FatalError,
     DropPacket,
     ReconnectRequired,
 }
@@ -44,9 +44,9 @@ fn classify_tun_error(err: &Error) -> TunEvent {
         ErrorKind::InvalidInput |
         ErrorKind::ResourceBusy |
         ErrorKind::AddrInUse |
-		ErrorKind::Unsupported => TunEvent::FatalError(format!("Critical error: {}", err)),
+		ErrorKind::Unsupported => TunEvent::FatalError,
 
-        _ => TunEvent::FatalError(format!("Unknown critical error: {}", err)),
+        _ => TunEvent::FatalError,
     }
 }
 
@@ -56,8 +56,7 @@ impl Tun {
 			   tun_ip: Ipv4Addr, 
 			   tun_subnet: Ipv4Addr, 
 			   tx_to_coord: mpsc::Sender<Bytes>, 
-			   rx_from_coord: mpsc::Receiver<Bytes>, 
-			   tx_logs: mpsc::Sender<TunEvent>) 
+			   rx_from_coord: mpsc::Receiver<Bytes>) 
 		-> Self
 	{
 		let mut config = Configuration::default();
@@ -72,22 +71,23 @@ impl Tun {
 			config,
 			tx_to_coord,
 			rx_from_coord,
-			tx_logs,
 		}
 	}
 
+	#[instrument(skip_all)]
 	pub async fn run(mut self) {
 		loop {
+			info!("Try to create a tun device...");
 			let tun_device = match tun::create_as_async(&self.config) {
 				Ok(ad) => ad,
 				Err(e) => {
-					let _ = self.tx_logs.try_send(TunEvent::InitError(e));
+					info!(error = %e, "Tun device create error");
 					tokio::time::sleep(Duration::from_secs(2)).await;
 					continue;
 				}
 			};
 
-			let _ = self.tx_logs.try_send(TunEvent::Info("Tun interface is up".to_string()));
+			info!("Tun interface is up");
 
 			let (tun_device_reader, tun_device_writer) = tokio::io::split(tun_device);
 			
@@ -99,7 +99,6 @@ impl Tun {
 			tokio::spawn(Self::worker_tun_reader(
 				tun_device_reader,
 				self.tx_to_coord.clone(),
-				self.tx_logs.clone(),
 				rx_stop_signal_reader,
 				tx_end_data_reader
 			));
@@ -107,7 +106,6 @@ impl Tun {
 			tokio::spawn(Self::worker_tun_writer(
 				tun_device_writer,
 				self.rx_from_coord,
-				self.tx_logs.clone(),
 				rx_stop_signal_writer,
 				tx_end_data_writer
 			));
@@ -125,28 +123,22 @@ impl Tun {
 
 									match event {
 										TunEvent::ReconnectRequired => {
-											let _ = self.tx_logs.send(TunEvent::ReconnectRequired).await;
 											continue;
 										}
-										TunEvent::FatalError(msg) => {
-											let _ = self.tx_logs.send(TunEvent::FatalError(msg)).await;
+										TunEvent::FatalError => {
 											return;
 										}
 										_ => {} // impossible
 									}
 								}
 								Err(_) => {
-									let _ = self.tx_logs.send(TunEvent::FatalError(
-										"Oneshot sync channels unexpected error".to_string()
-									)).await;
+									error!("Oneshot sync channels unexpected error");
 									return;
 								}
 							}
 						}
 						Err(_) => {
-							let _ = self.tx_logs.send(TunEvent::FatalError(
-								"Oneshot sync channels unexpected error".to_string()
-							)).await;
+							error!("Oneshot sync channels unexpected error");
 							return;
 						}
 					}
@@ -163,28 +155,22 @@ impl Tun {
 								Ok(_) => {
 									match event {
 										TunEvent::ReconnectRequired => {
-											let _ = self.tx_logs.send(TunEvent::ReconnectRequired).await;
 											continue;
 										}
-										TunEvent::FatalError(msg) => {
-											let _ = self.tx_logs.send(TunEvent::FatalError(msg)).await;
+										TunEvent::FatalError => {
 											return;
 										}
 										_ => {} // impossible
 									}
 								}
 								Err(_) => {
-									let _ = self.tx_logs.send(TunEvent::FatalError(
-										"Oneshot sync channels unexpected error".to_string()
-									)).await;
+									error!("Oneshot sync channels unexpected error");
 									return;
 								}
 							}
 						}
 						Err(_) => {
-							let _ = self.tx_logs.send(TunEvent::FatalError(
-								"Oneshot sync channels unexpected error".to_string()
-							)).await;
+							error!("Oneshot sync channels unexpected error");
 							return;	
 						}
 					}
@@ -195,7 +181,6 @@ impl Tun {
 
 	async fn worker_tun_reader(mut tun_device: ReadHalf<AsyncDevice>, 
 							   tx_to_coord: mpsc::Sender<Bytes>, 
-							   tx_logs: mpsc::Sender<TunEvent>, 
 							   mut rx_stop_signal: oneshot::Receiver<()>,
 							   tx_end_data: oneshot::Sender<TunEvent>)
 	{
@@ -204,6 +189,7 @@ impl Tun {
 			tokio::select! {
 				// don't own rx_stop_signal for loop safety exec due to borrow checker
 				_ = &mut rx_stop_signal => {
+					debug!("Receive stop signal");
 					let _ = tx_end_data.send(TunEvent::Info("nothing".to_string()));
 					return;
 				}
@@ -212,14 +198,15 @@ impl Tun {
 					match result {
 						// check https://docs.rs/tokio/1.51.1/tokio/io/trait.AsyncReadExt.html#method.read
 						Ok(0) => {
+							warn!("Reconnection required due to received 0 bytes");
 							let _ = tx_end_data.send(TunEvent::ReconnectRequired);
 							return;
 						}
 						Ok(size) => {
+							trace!(size, "Read packet from tun");
 							if let Err(_) = tx_to_coord.send(Bytes::copy_from_slice(&buf[..size])).await {
-								let _ = tx_end_data.send(TunEvent::FatalError(
-									"The channel for sending packets to coordinator was closed".to_string()
-								));
+								error!("The channel for sending packets to coordinator was closed");
+								let _ = tx_end_data.send(TunEvent::FatalError);
 								return;
 							}
 						}
@@ -227,15 +214,17 @@ impl Tun {
 							let action = classify_tun_error(&e);
 							match action {
 								TunEvent::ReconnectRequired => {
+									warn!("Reconnection required due to tun read error");
 									let _ = tx_end_data.send(TunEvent::ReconnectRequired);
 									return;
 								}
 								TunEvent::DropPacket => {
-									let _ = tx_logs.try_send(TunEvent::DropPacket);
+									debug!("Drop packet while reading from tun");
 									continue;
 								}
-								TunEvent::FatalError(msg) => {
-									let _ = tx_end_data.send(TunEvent::FatalError(msg));
+								TunEvent::FatalError => {
+									error!("Unexpected error while reading from tun");
+									let _ = tx_end_data.send(TunEvent::FatalError);
 									return;
 								}
 								_ => {}
@@ -247,9 +236,9 @@ impl Tun {
 		}
 	}
 
+	#[instrument(skip_all)]
 	async fn worker_tun_writer(mut tun_device: WriteHalf<AsyncDevice>, 
-							   mut rx_from_coord: mpsc::Receiver<Bytes>, 
-							   tx_logs: mpsc::Sender<TunEvent>, 
+							   mut rx_from_coord: mpsc::Receiver<Bytes>,
 							   mut rx_stop_signal: oneshot::Receiver<()>, 
 							   tx_end_data: oneshot::Sender<(mpsc::Receiver<Bytes>, TunEvent)>)
 	{
@@ -257,6 +246,7 @@ impl Tun {
 			tokio::select! {
 				// don't own rx_stop_signal for loop safety exec due to borrow checker
 				_ = &mut rx_stop_signal => {
+					debug!("Receive stop signal");
 					let _ = tx_end_data.send((rx_from_coord, TunEvent::Info("nothing".to_string())));
 					return;
 				}
@@ -264,21 +254,27 @@ impl Tun {
 				opt = rx_from_coord.recv() => {
 					match opt {
 						Some(packet) => {
+							trace!(size = packet.len(), "Receive packet from coordinator");
 							match tun_device.write(&packet[..]).await {
-								Ok(_) => continue,
+								Ok(_) => {
+									trace!(size = packet.len(), "Write packet to tun");
+									continue;
+								}	
 								Err(e) => {
 									let action = classify_tun_error(&e);
 									match action {
 										TunEvent::ReconnectRequired => {
+											warn!("Reconnection required due to write to tun error");
 											let _ = tx_end_data.send((rx_from_coord, TunEvent::ReconnectRequired));
 											return;
 										}
 										TunEvent::DropPacket => {
-											let _ = tx_logs.try_send(TunEvent::DropPacket);
+											debug!("Drop packet while writing to tun");
 											continue;
 										}
-										TunEvent::FatalError(msg) => {
-											let _ = tx_end_data.send((rx_from_coord, TunEvent::FatalError(msg)));
+										TunEvent::FatalError => {
+											error!("Unexpected error while writing to tun");
+											let _ = tx_end_data.send((rx_from_coord, TunEvent::FatalError));
 											return;
 										}
 										_ => {}
@@ -287,9 +283,8 @@ impl Tun {
 							}
 						}
 						None => {
-							let _ = tx_end_data.send((rx_from_coord, TunEvent::FatalError(
-								"The channel for receiving packets from the coordinator was closed".to_string()
-							)));
+							error!("The channel for receiving packets from the coordinator was closed");
+							let _ = tx_end_data.send((rx_from_coord, TunEvent::FatalError));
 							return;
 						}
 					}
@@ -322,9 +317,7 @@ mod tests {
 
         let err_perm = Error::from(ErrorKind::PermissionDenied);
         let action = classify_tun_error(&err_perm);
-        if let TunEvent::FatalError(msg) = action {
-            assert!(msg.contains("Critical error:"));
-        } else {
+        if !matches!(action, TunEvent::FatalError) {
             panic!("Expected FatalError");
         }
     }
@@ -334,34 +327,19 @@ mod tests {
     async fn test_tun_lifecycle_and_channels() {
         let (tx_coord, _rx_coord) = mpsc::channel(100);
         let (tx_from_coord, rx_from_coord) = mpsc::channel(100);
-        let (tx_logs, mut rx_logs) = mpsc::channel(100);
 
         let tun = Tun::new(
-        	"iroh_vpn_tun",
+            "iroh_vpn_tun",
             1500,
             Ipv4Addr::new(10, 200, 200, 1), 
             Ipv4Addr::new(255, 255, 255, 0),
             tx_coord,
             rx_from_coord,
-            tx_logs,
         );
 
         let handle = tokio::spawn(tun.run());
 
-        let mut is_up = false;
-        while let Ok(Some(event)) = timeout(Duration::from_secs(3), rx_logs.recv()).await {
-            match event {
-                TunEvent::Info(msg) if msg == "Tun interface is up" => {
-                    is_up = true;
-                    break;
-                }
-                TunEvent::InitError(e) => {
-                    panic!("Failed to init TUN interface (did you run with sudo?): {:?}", e);
-                }
-                _ => {}
-            }
-        }
-        assert!(is_up, "Tun interface failed to start");
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
         let fake_ipv4_packet = Bytes::from(vec![
             0x45, 0x00, 0x00, 0x14, 0x00, 0x00, 0x40, 0x00, 
@@ -376,18 +354,8 @@ mod tests {
 
         drop(tx_from_coord);
 
-        let mut fatal_found = false;
-        while let Ok(Some(event)) = timeout(Duration::from_secs(2), rx_logs.recv()).await {
-            if let TunEvent::FatalError(msg) = event {
-                assert!(msg.contains("closed"), "Unexpected fatal error msg: {}", msg);
-                fatal_found = true;
-                break;
-            }
-        }
-        assert!(fatal_found, "Worker did not exit properly after channel closed");
-
-        let _ = timeout(Duration::from_secs(1), handle).await
-            .expect("Task did not terminate");
+        let res = timeout(Duration::from_secs(2), handle).await;
+        assert!(res.is_ok(), "Worker did not exit properly after channel closed");
     }
 
     #[tokio::test]
@@ -395,32 +363,19 @@ mod tests {
     async fn test_tun_read_actual_bytes_from_os() {
         let (tx_coord, mut rx_coord) = mpsc::channel(100);
         let (_tx_from_coord, rx_from_coord) = mpsc::channel(100);
-        let (tx_logs, mut rx_logs) = mpsc::channel(100);
 
         let tun = Tun::new(
-        	"iroh_vpn_tun",
+            "iroh_vpn_tun",
             1500,
             Ipv4Addr::new(10, 201, 201, 1),
             Ipv4Addr::new(255, 255, 255, 0),
             tx_coord,
             rx_from_coord,
-            tx_logs,
         );
 
         let handle = tokio::spawn(tun.run());
 
-        let mut is_up = false;
-        while let Ok(Some(event)) = timeout(Duration::from_secs(3), rx_logs.recv()).await {
-            if let TunEvent::Info(msg) = event {
-                if msg == "Tun interface is up" {
-                    is_up = true;
-                    break;
-                }
-            }
-        }
-        assert!(is_up, "Tun interface failed to start");
-
-        tokio::time::sleep(Duration::from_millis(100)).await;
+        tokio::time::sleep(Duration::from_millis(500)).await;
 
         tokio::spawn(async move {
             let _ = std::process::Command::new("ping")
