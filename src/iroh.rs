@@ -1,5 +1,5 @@
 use iroh::{SecretKey, PublicKey};
-use iroh::endpoint::{Endpoint, presets, Connection, InvalidSocketAddr, BindError, IncomingAddr::Relay, SendDatagramError};
+use iroh::endpoint::{Endpoint, presets, Connection, InvalidSocketAddr, BindError, SendDatagramError};
 use bytes::Bytes;
 use tokio::sync::mpsc;
 use std::collections::{HashSet, HashMap};
@@ -165,7 +165,7 @@ impl Iroh {
 			CoreEvent::SendPacketTo(packet, to) => {
 				if let Some(Some(ConnectionState {tx_packet, ..})) = self.state_table.get(&to) {
 					if let Err(e) = tx_packet.try_send(packet) {
-					    info!(to = %to, "Peer queue is full, dropping packet");
+					    debug!(to = %to, "Peer queue is full, dropping packet");
 					}
 					return;
 				}
@@ -233,9 +233,11 @@ impl Iroh {
 					match result {
 						Ok(packet) => {
 							trace!(size = packet.len(), "Received packet from peer");
-							let _ = tx_packet_channel.send(
+							if let Err(e) = tx_packet_channel.try_send(
 								IrohEvent::RecvPacketFrom(packet, connection.remote_id())
-							).await;
+							) {
+							    debug!("Coordinator queue is full, dropping packet from Iroh peer");
+							}
 						}
 						Err(e) => {
 							info!(error = %e, "Connection closed by remote peer or network error");
@@ -255,7 +257,12 @@ impl Iroh {
 	                            debug!(error = %e, "Failed to send outgoing packet");
 	                            match e {
 	                            	SendDatagramError::TooLarge => {},
-	                            	_ => return,
+	                            	_ => {
+	                            		let _ = tx_to_manager.send(
+	                            			ConnectionEvent::Disconnected(connection.remote_id())
+	                            		).await;
+										return;
+	                            	}
 	                            }
 	                        }
 						}
@@ -295,33 +302,26 @@ impl Iroh {
 	{
 		info!("Started listening for incoming connections");
 		while let Some(incoming) = endpoint.accept().await {
-			let pub_key = match incoming.remote_addr() {
-				Relay {endpoint_id: pub_key, ..} => pub_key,
-				_ => { // weird
-					warn!("Received incoming connection from non-relay address");
-					continue;
-					//let _ = tx_to_manager.send(ConnectionEvent::InternalError).await;
-					//return;
-				}
-			};
-
-			if !peers.contains(&pub_key) || pub_key < endpoint.id() {
-				debug!(peer = %pub_key, "Rejected connection (not in peers list or order check failed)");
-				continue;
-			}
-
 			match incoming.accept() {
 				Ok(ac) => {
 					match ac.await {
 						Ok(conn) => {
+							// check connection
+							let pub_key = conn.remote_id();
+
+							if !peers.contains(&pub_key) || pub_key < endpoint.id() {
+								debug!(peer = %pub_key, "Rejected connection (not in peers list or order check failed)");
+								continue;
+							}			
+
 							info!(peer = %pub_key, "Accepted new incoming connection");
 							let _ = tx_to_manager.send(ConnectionEvent::IncomingConnection(conn)).await;
 							continue;
 						}
-						Err(e) => debug!(error = %e, peer = %pub_key, "Connecting error"),
+						Err(e) => debug!(error = %e, "Connecting error"),
 					}
 				}
-				Err(e) => debug!(error = %e, peer = %pub_key, "Failed to accept incoming stream"),
+				Err(e) => debug!(error = %e, "Failed to accept incoming connection"),
 			}
 		}
 	}
