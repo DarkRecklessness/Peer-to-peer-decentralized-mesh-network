@@ -40,6 +40,7 @@ impl Coordinator {
 				result = self.rx_from_iroh.recv() => {
 					match result {
 						Some(event) => {
+							trace!("Receive event from iroh");
 							if self.handle_iroh_event(event).await.is_err() {
 								return;
 							}
@@ -54,6 +55,7 @@ impl Coordinator {
 				result = self.rx_from_tun.recv() => {
 					match result {
 						Some(packet) => {
+							trace!("Receive packet from tun");
 							if self.handle_packet_from_tun(packet).await.is_err() {
 								return;
 							}
@@ -78,6 +80,7 @@ impl Coordinator {
 		self.handle_actions(actions).await
 	}
 
+	#[instrument(skip_all)]
 	async fn handle_actions(&self, actions: Vec<Action>) -> Result<(), ChannelWasClosed> {
 		for action in actions {
 			match action {
