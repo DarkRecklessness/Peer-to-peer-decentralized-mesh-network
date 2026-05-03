@@ -54,7 +54,7 @@ impl Tun {
 	pub fn new(tun_name: &str, 
 			   mtu: u16,
 			   tun_ip: Ipv4Addr, 
-			   tun_subnet: Ipv4Addr, 
+			   netmask: Ipv4Addr, 
 			   tx_to_coord: mpsc::Sender<Bytes>, 
 			   rx_from_coord: mpsc::Receiver<Bytes>) 
 		-> Self
@@ -63,7 +63,7 @@ impl Tun {
 		
 		config.mtu(mtu)
 		      .address(tun_ip)
-		      .netmask(tun_subnet)
+		      .netmask(netmask)
 		      .tun_name(tun_name)
 		      .up();
 
