@@ -27,9 +27,9 @@ node_ipv4 = "10.67.1.5"
 # ==========================================
 # You can add multiple [[peers]] blocks to define your whitelist.
 [[peers]]
-pub_key = "3pj4c7xtn1r8x8o1q8z9e4j6h5w3a3m9p7z8n1r8x8o1q8z9e4jy"
+pub_key = "xkh8cq69d6qxt5zz9gx9x97djohf3c1mgqbiq3ku5cc679nix91o"
 ipv4 = "10.67.2.10"
 
 # [[peers]]
-# pub_key = "4pj4c7xtn1r8x8o1q8z9e4j6h5w3a3m9p7z8n1r8x8o1q8z9e4jy"
+# pub_key = "xkh8cq65d6qxt5zz9gx9x97djohf3c1mgqbiq3ku5cc679nix91o"
 # ipv4 = "10.67.1.11"

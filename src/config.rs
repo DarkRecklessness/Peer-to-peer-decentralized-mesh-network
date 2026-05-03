@@ -164,7 +164,7 @@ impl Config {
 					return Err(ConfigError::Ipv4ParseError(e));
 				}
 			};
-			let pub_key = match PublicKey::from_str(&peer.pub_key) {
+			let pub_key = match PublicKey::from_z32(&peer.pub_key[..]) {
 				Ok(pk) => pk,
 				Err(e) => {
 					return Err(ConfigError::PublicKeyParseError(e));
