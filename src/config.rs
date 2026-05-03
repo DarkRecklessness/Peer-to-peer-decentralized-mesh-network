@@ -10,13 +10,16 @@ use std::fmt;
 use std::error::Error;
 
 const SUBNET: Ipv4Addr = Ipv4Addr::new(10, 67, 0, 0);
-const MASK: Ipv4Addr = Ipv4Addr::new(255, 255, 0, 0);
+const NETMASK: Ipv4Addr = Ipv4Addr::new(255, 255, 0, 0);
 const DEFAULT_LISTEN_PORT: u16 = 6767;
 const DEFAULT_MTU: u16 = 1500;
+const DEFAULT_TUN_NAME: &str = "iroh_vpn";
 
 pub struct Config {
 	pub secret_key: SecretKey,
 	pub node_ipv4: Ipv4Addr,
+	pub netmask: Ipv4Addr,
+	pub tun_name: String,
 	pub listen_port: u16,
 	pub mtu: u16,
 	pub log_level: String,
@@ -28,6 +31,7 @@ pub struct Config {
 struct ConfigToml {
 	secret_key_path: String,
    	node_ipv4: String,
+   	tun_name: Option<String>,
    	listen_port: Option<u16>,
    	mtu: Option<u16>,
    	log_level: Option<String>,
@@ -114,7 +118,7 @@ impl Config {
 				return Err(ConfigError::Ipv4ParseError(e));
 			}
 		};
-		if (node_ipv4 & MASK) != SUBNET {
+		if (node_ipv4 & NETMASK) != SUBNET {
 			return Err(ConfigError::Ipv4NotInSubnet);
 		}
 
@@ -144,9 +148,16 @@ impl Config {
 			None => "info".to_string(),
 		};
 
+		let tun_name = match config_toml.tun_name {
+			Some(name) => name,
+			None => DEFAULT_TUN_NAME.to_string(),
+		};
+
 		Ok(Config {
 			secret_key,
 			node_ipv4,
+			netmask: NETMASK,
+			tun_name,
 			listen_port,
 			mtu,
 			log_level,

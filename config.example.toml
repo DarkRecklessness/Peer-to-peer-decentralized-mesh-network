@@ -7,6 +7,9 @@ secret_key_path = "/path/to/your/secret.key"
 # IMPORTANT: The address must be within the 10.67.0.0/16 subnet.
 node_ipv4 = "10.67.1.5"
 
+# Tun interface name (optional, default is "iroh_vpn")
+# tun_name = "my_custom_name"
+
 # Port for incoming connections (optional).
 # Uncomment to override the default behavior.
 # listen_port = 6767
