@@ -1,4 +1,4 @@
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::{mpsc::{self, error::TrySendError}, oneshot};
 use tokio::io::{ReadHalf, WriteHalf, AsyncWriteExt, AsyncReadExt};
 use bytes::Bytes;
 use std::io::{Error, ErrorKind};
@@ -179,6 +179,7 @@ impl Tun {
 		}
 	}
 
+	#[instrument(skip_all)]
 	async fn worker_tun_reader(mut tun_device: ReadHalf<AsyncDevice>, 
 							   tx_to_coord: mpsc::Sender<Bytes>, 
 							   mut rx_stop_signal: oneshot::Receiver<()>,
@@ -204,10 +205,15 @@ impl Tun {
 						}
 						Ok(size) => {
 							trace!(size, "Read packet from tun");
-							if let Err(_) = tx_to_coord.send(Bytes::copy_from_slice(&buf[..size])).await {
-								error!("The channel for sending packets to coordinator was closed");
-								let _ = tx_end_data.send(TunEvent::FatalError);
-								return;
+							if let Err(e) = tx_to_coord.try_send(Bytes::copy_from_slice(&buf[..size])) {
+								match e {
+									TrySendError::Full(_) => debug!("Packet queue to coordinator is full, drop packet"),
+									TrySendError::Closed(_) => {
+										 error!("The channel for sending packets to coordinator was closed");
+										 let _ = tx_end_data.send(TunEvent::FatalError);
+										 return;	
+									}
+								}
 							}
 						}
 						Err(e) => {
