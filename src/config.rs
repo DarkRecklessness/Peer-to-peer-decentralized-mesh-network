@@ -19,6 +19,8 @@ pub struct Config {
 	pub node_ipv4: Ipv4Addr,
 	pub listen_port: u16,
 	pub mtu: u16,
+	pub log_level: String,
+	pub log_path: Option<String>,
 	pub peers: HashMap<Ipv4Addr, PublicKey>,
 }
 
@@ -28,6 +30,8 @@ struct ConfigToml {
    	node_ipv4: String,
    	listen_port: Option<u16>,
    	mtu: Option<u16>,
+   	log_level: Option<String>,
+   	log_path: Option<String>,
    	peers: Vec<Peer>,
 }
 
@@ -45,6 +49,7 @@ pub enum ConfigError {
 	Ipv4ParseError(net::AddrParseError),
 	PublicKeyParseError(iroh::KeyParsingError),
 	Ipv4NotInSubnet,
+	IncorrectLogLevel,
 }
 
 #[derive(Debug)]
@@ -62,6 +67,7 @@ impl fmt::Display for ConfigError {
 			ConfigError::Ipv4ParseError(e) => write!(f, "Ipv4 parse error: {}", e),
 			ConfigError::PublicKeyParseError(e) => write!(f, "Public key parse error: {}", e),
 			ConfigError::Ipv4NotInSubnet => write!(f, "Node Ipv4 not in correct subnet"),
+			ConfigError::IncorrectLogLevel => write!(f, "Incorrect log level"),
 		}
 	}
 }
@@ -122,11 +128,29 @@ impl Config {
 			None => DEFAULT_MTU
 		};
 
+		let log_level = match config_toml.log_level {
+			Some(lvl) => {
+				match &lvl[..] {
+					"trace" |
+					"debug" |
+					"info"  |
+					"warn"  |
+					"error" |
+					"off"   
+					=> lvl,
+					_ => return Err(ConfigError::IncorrectLogLevel),
+				}
+			}
+			None => "info".to_string(),
+		};
+
 		Ok(Config {
 			secret_key,
 			node_ipv4,
 			listen_port,
 			mtu,
+			log_level,
+			log_path: config_toml.log_path,
 			peers,	
 		})
 	}

@@ -16,6 +16,11 @@ node_ipv4 = "10.67.1.5"
 # on the way to adjacent nodes.
 # mtu = 1500
 
+# Log level (optional, possible variants: trace, debug, info, warn, error, off, default is info)
+# log_level = "info"
+
+# Log path (optional, this is an additional logging in file to stdout)
+# log_path = "/path/to/your/log/file"
 
 # ==========================================
 # Adjacent nodes (Whitelist)
