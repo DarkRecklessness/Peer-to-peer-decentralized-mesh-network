@@ -13,7 +13,7 @@ const CHANNEL_CAPACITY: usize = 8192;
 pub struct Iroh {
 	endpoint: Endpoint,
 	tx_to_coord: mpsc::Sender<IrohEvent>,
-	rx_from_coord: mpsc::Receiver<CoreEvent>,
+	rx_from_coord: mpsc::Receiver<CoreAction>,
 	tx_to_manager: mpsc::Sender<ConnectionEvent>,
 	rx_from_tasks: mpsc::Receiver<ConnectionEvent>,
 	state_table: HashMap<PublicKey, Option<ConnectionState>>,
@@ -33,7 +33,7 @@ pub enum IrohEvent {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum CoreEvent {
+pub enum CoreAction {
 	SendPacketTo(Bytes, PublicKey),
 	DisconnectFromPeer(PublicKey),
 }
@@ -56,7 +56,7 @@ impl Iroh {
 	pub async fn new(secret_key: SecretKey, 
 			   		 peers: HashSet<PublicKey>, 
 			   		 tx_to_coord: mpsc::Sender<IrohEvent>,
-			   	  	 rx_from_coord: mpsc::Receiver<CoreEvent>,
+			   	  	 rx_from_coord: mpsc::Receiver<CoreAction>,
 			   		 listen_port: u16) 
 		-> Result<Self, InitError> 
 	{
@@ -160,9 +160,9 @@ impl Iroh {
 		Ok(())
 	}
 
-	async fn handle_core_event(&mut self, event: CoreEvent) {
+	async fn handle_core_event(&mut self, event: CoreAction) {
 		match event {
-			CoreEvent::SendPacketTo(packet, to) => {
+			CoreAction::SendPacketTo(packet, to) => {
 				if let Some(Some(ConnectionState {tx_packet, ..})) = self.state_table.get(&to) {
 					if let Err(e) = tx_packet.try_send(packet) {
 					    debug!(to = %to, "Peer queue is full, dropping packet");
@@ -174,7 +174,7 @@ impl Iroh {
 			}
 			
 			// impossible in current implementation of iroh + core connect managment 
-			CoreEvent::DisconnectFromPeer(pub_key) => {
+			CoreAction::DisconnectFromPeer(pub_key) => {
 				if let Some(Some(ConnectionState {task: old_task, ..})) = self.state_table.get(&pub_key) {
 					old_task.abort();
 				}
