@@ -206,3 +206,139 @@ impl Config {
 		Ok(secret_key)
 	}
 }
+
+
+// ===============
+// TESTS
+// ===============
+
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::tempdir;
+    use std::fs;
+    use std::io::Write;
+
+    fn create_config_file(dir: &tempfile::TempDir, content: &str) -> String {
+        let file_path = dir.path().join("config.toml");
+        let mut file = fs::File::create(&file_path).unwrap();
+        file.write_all(content.as_bytes()).unwrap();
+        file_path.to_string_lossy().to_string()
+    }
+
+    #[test]
+    fn test_valid_full_config() {
+        let dir = tempdir().unwrap();
+        let secret_key_path = dir.path().join("tmp_secret.key");
+        
+        let peer_pub_key = SecretKey::generate().public().to_z32();
+
+        let toml_content = format!(r#"
+            secret_key_path = "{}"
+            node_ipv4 = "10.67.1.5"
+            listen_port = 8080
+            mtu = 1400
+            log_level = "debug"
+            log_path = "/var/log/vpn.log"
+
+            [[peers]]
+            pub_key = "{}"
+            ipv4 = "10.67.2.10"
+        "#, secret_key_path.display(), peer_pub_key);
+
+        let config_path = create_config_file(&dir, &toml_content);
+        let config = Config::from_file(&config_path).expect("Failed to parse valid config");
+
+        assert!(secret_key_path.exists());
+        
+        let saved_key_bytes = fs::read(&secret_key_path).unwrap();
+        assert_eq!(saved_key_bytes.len(), 32);
+        
+        assert_eq!(config.node_ipv4, Ipv4Addr::new(10, 67, 1, 5));
+        assert_eq!(config.listen_port, 8080);
+        assert_eq!(config.mtu, 1400);
+        assert_eq!(config.log_level, "debug");
+        assert_eq!(config.log_path, Some("/var/log/vpn.log".to_string()));
+        
+        let peer_ip = Ipv4Addr::new(10, 67, 2, 10);
+        assert!(config.peers.contains_key(&peer_ip));
+        assert_eq!(config.peers.get(&peer_ip).unwrap().to_z32(), peer_pub_key);
+    }
+
+    #[test]
+    fn test_valid_minimal_config_and_existing_raw_secret_key() {
+        let dir = tempdir().unwrap();
+        let secret_key_path = dir.path().join("tmp_secret.key");
+        
+        let existing_sk = SecretKey::generate();
+        fs::write(&secret_key_path, existing_sk.to_bytes()).unwrap();
+
+        let toml_content = format!(r#"
+            secret_key_path = "{}"
+            node_ipv4 = "10.67.255.254"
+            peers = []
+        "#, secret_key_path.display());
+
+        let config_path = create_config_file(&dir, &toml_content);
+        let config = Config::from_file(&config_path).unwrap();
+
+        assert_eq!(config.listen_port, DEFAULT_LISTEN_PORT);
+        assert_eq!(config.mtu, DEFAULT_MTU);
+        assert_eq!(config.log_level, "info");
+        assert_eq!(config.log_path, None);
+        
+        assert_eq!(config.secret_key.to_bytes(), existing_sk.to_bytes());
+    }
+
+    #[test]
+    fn test_invalid_secret_key_length() {
+        let dir = tempdir().unwrap();
+        let secret_key_path = dir.path().join("broken.key");
+        
+        fs::write(&secret_key_path, b"1234567890").unwrap();
+
+        let toml_content = format!(r#"
+            secret_key_path = "{}"
+            node_ipv4 = "10.67.1.1"
+            peers = []
+        "#, secret_key_path.display());
+
+        let config_path = create_config_file(&dir, &toml_content);
+        let result = Config::from_file(&config_path);
+        
+        assert!(matches!(
+            result,
+            Err(ConfigError::SecretKeyError(SecretKeyError::IncorrectKey))
+        ));
+    }
+
+    #[test]
+    fn test_invalid_peer_pub_key_z32() {
+        let dir = tempdir().unwrap();
+        
+        let toml_content = r#"
+            secret_key_path = "/tmp/dummy.key"
+            node_ipv4 = "10.67.1.1"
+            [[peers]]
+            pub_key = "this_is_obviously_not_a_valid_z32_iroh_key"
+            ipv4 = "10.67.2.10"
+        "#;
+        let config_path = create_config_file(&dir, toml_content);
+        assert!(matches!(Config::from_file(&config_path), Err(ConfigError::PublicKeyParseError(_))));
+    }
+
+    #[test]
+    fn test_ipv4_not_in_subnet() {
+        let dir = tempdir().unwrap();
+        let toml_content = r#"
+            secret_key_path = "/tmp/dummy.key"
+            node_ipv4 = "192.168.1.1"
+            peers = []
+        "#;
+        let config_path = create_config_file(&dir, toml_content);
+        
+        let result = Config::from_file(&config_path);
+        assert!(matches!(result, Err(ConfigError::Ipv4NotInSubnet)));
+    }
+}

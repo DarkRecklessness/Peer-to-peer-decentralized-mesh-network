@@ -15,3 +15,7 @@ tun = { version = "0.8.7", features = ["async"] }
 tracing = "0.1"
 tracing-appender = "0.2"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]
+# only for tests
+tempfile = "3.10"
