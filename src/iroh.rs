@@ -6,6 +6,8 @@ use std::collections::{HashSet, HashMap};
 use tokio::time::{sleep, Duration};
 use tokio::task::JoinHandle;
 use tracing::{info, warn, error, debug, trace, instrument};
+use std::fmt;
+use std::error::Error;
 
 const ALPN: &[u8] = b"iroh_vpn";
 const CHANNEL_CAPACITY: usize = 8192;
@@ -52,6 +54,17 @@ enum ConnectionEvent {
 	InternalError,
 }
 
+impl fmt::Display for InitError {
+	fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+		match self {
+			InitError::BindAddrError(e) => write!(f, "Iroh init error: {}", e),
+			InitError::BuildError(e) => write!(f, "Iroh init error: {}", e),
+		}
+	}
+}
+
+impl Error for InitError {}
+
 impl Iroh {
 	pub async fn new(secret_key: SecretKey, 
 			   		 peers: HashSet<PublicKey>, 
@@ -89,6 +102,7 @@ impl Iroh {
 		})
 	}
 
+	#[instrument(skip_all)]
 	pub async fn run(mut self) {
 		self.init();		
 		// event loop
