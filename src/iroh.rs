@@ -191,7 +191,10 @@ impl Iroh {
 						}	
 					}
 					
-					None => {} // HANDLE THIS
+					None => {
+						warn!(peer = %conn.remote_id(), "ignored outgoing connection: unknown peer");
+						conn.close(1u32.into(), b"can't connect to unknown peer");	
+					}
 				}
 			}
 			
@@ -229,7 +232,10 @@ impl Iroh {
 						}	
 					}
 					
-					None => {} // HANDLE THIS
+					None => {
+						warn!(peer = %conn.remote_id(), "ignored incoming connection: unknown peer");
+						conn.close(1u32.into(), b"can't connect to unknown peer");
+					}
 				}
 			}
 			
@@ -265,7 +271,9 @@ impl Iroh {
 						}
 					}
 					
-					None => {} // HANDLE THIS
+					None => {
+						warn!(peer = %pub_key, "ignored Disconnected event: unknown peer");
+					}
 				}
 			}
 			ConnectionEvent::InternalError => {
@@ -310,7 +318,9 @@ impl Iroh {
 						}
 					}
 					
-					None => {} // HANDLE THIS
+					None => {
+						warn!(peer = %pub_key, "ignored ConnectToPeer action: unknown peer");
+					}
 				}
 			}
 			 
@@ -329,7 +339,9 @@ impl Iroh {
 						_ => {}						
 					}
 					
-					None => {}
+					None => {
+						warn!(peer = %pub_key, "ignored DisconnectFromPeer action: unknown peer");
+					}
 				}	
 
 				self.state_table.insert(pub_key.clone(), ConnectionState::Disconnected);
