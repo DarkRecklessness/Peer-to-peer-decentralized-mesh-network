@@ -2,3 +2,5 @@
 config.toml
 secret.key
 /tmp
+tests/
+src/bin/

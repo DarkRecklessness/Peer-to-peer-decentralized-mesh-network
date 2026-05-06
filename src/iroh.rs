@@ -166,6 +166,7 @@ impl Iroh {
 						// he definitely accept the second one
 						// so here we can do the same - accept the second if we already connected  
 						ConnectionState::Connecting(_) => {
+							info!(peer = %conn.remote_id(), "Successfully init connection to");
 							self.init_ready_connection(conn).await;
 						}
 
@@ -174,6 +175,7 @@ impl Iroh {
 							expired_task.abort();
 							expired_conn.close(1u32.into(), b"connection is expired: data race resolver");
 
+							info!(peer = %conn.remote_id(), "Successfully init connection to");
 							self.init_ready_connection(conn).await;	
 						}
 
@@ -204,6 +206,7 @@ impl Iroh {
 						ConnectionState::WaitingIncomingConnection => {
 							// {DisconnectCore, ConnectCore - state = Waiting, IncomingConnection} - it's ok
 							// in that queue can be multiple Incoming, so just accept the latest one
+							info!(peer = %conn.remote_id(), "Succesfully accept incoming connection from");
 							self.init_ready_connection(conn).await;		
 						}
 
@@ -216,6 +219,7 @@ impl Iroh {
 							expired_task.abort();
 							expired_conn.close(1u32.into(), b"connection is expired: peer open another connection");
 
+							info!(peer = %conn.remote_id(), "Succesfully accept incoming connection from");
 							self.init_ready_connection(conn).await;		
 						}
 
@@ -247,6 +251,7 @@ impl Iroh {
 							// {DisconnectCore, ConnectCore, already connected (it's not possible,
 							// because we handle the ConnctedToPeer after Disconnect from task), Disconnect from task}
 							// everything ok, it's correct disconnect for CURRENT connection
+							info!(peer = %pub_key, "Disconnected from");
 							let _ = self.tx_to_coord.send(
 								IrohEvent::DisconnectedFromPeer(pub_key.clone())
 							).await;
@@ -330,6 +335,9 @@ impl Iroh {
 						ConnectionState::Connected{task: old_task, connection: old_conn, ..} => {
 							old_task.abort();
 							old_conn.close(1u32.into(), b"disconnect from peer core action");
+							let _ = self.tx_to_coord.send(
+								IrohEvent::DisconnectedFromPeer(pub_key)
+							).await;
 						}
 
 						ConnectionState::Connecting(conn_task) => {
@@ -345,10 +353,6 @@ impl Iroh {
 				}	
 
 				self.state_table.insert(pub_key.clone(), ConnectionState::Disconnected);
-
-				let _ = self.tx_to_coord.send(
-					IrohEvent::DisconnectedFromPeer(pub_key)
-				).await;
 			}
 		}
 	}
@@ -469,7 +473,7 @@ impl Iroh {
 		loop {
 			match endpoint.connect(to, ALPN).await {
 				Ok(conn) => {
-					info!("Successfully connected");
+					// info!("Successfully connected");
 					let _ = tx_to_manager.send(ConnectionEvent::OutgoingConnection(conn)).await;
 					return;
 				}
@@ -490,28 +494,18 @@ impl Iroh {
 		while let Some(incoming) = endpoint.accept().await {
 			match incoming.accept() {
 				Ok(ac) => {
-					match ac.await {
-						Ok(conn) => {
-							// check connection
-							let pub_key = conn.remote_id();
-
-							if !peers.contains(&pub_key) {
-								debug!(peer = %pub_key, "Rejected connection (not in peers list)");
-								continue;
+					let tx_to_manager_clone = tx_to_manager.clone();
+					tokio::spawn(async move {
+						match ac.await {
+							Ok(conn) => {
+								let _ = tx_to_manager_clone.send(ConnectionEvent::IncomingConnection(conn)).await;
 							}
-
-							if pub_key < endpoint.id() {
-								debug!(peer = %pub_key, "Rejected connection (order invariant of public keys are incorrect)");
-								continue;
-							}
-
-							info!(peer = %pub_key, "Accepted new incoming connection");
-							let _ = tx_to_manager.send(ConnectionEvent::IncomingConnection(conn)).await;
-							continue;
+							
+							Err(e) => debug!(error = %e, "Connecting error"),
 						}
-						Err(e) => debug!(error = %e, "Connecting error"),
-					}
+					});
 				}
+				
 				Err(e) => debug!(error = %e, "Failed to accept incoming connection"),
 			}
 		}
