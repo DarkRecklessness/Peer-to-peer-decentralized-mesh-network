@@ -1,5 +1,5 @@
 use iroh::{SecretKey, PublicKey};
-use iroh::endpoint::{Endpoint, presets, Connection, InvalidSocketAddr, BindError, SendDatagramError};
+use iroh::endpoint::{Endpoint, presets, Connection, InvalidSocketAddr, BindError, SendDatagramError, Builder};
 use bytes::Bytes;
 use tokio::sync::mpsc;
 use std::collections::{HashSet, HashMap};
@@ -8,6 +8,7 @@ use tokio::task::JoinHandle;
 use tracing::{info, warn, error, debug, trace, instrument};
 use std::fmt;
 use std::error::Error;
+use iroh::address_lookup::{AddressLookupBuilder, pkarr::PkarrPublisher, pkarr::PkarrResolver};
 
 const ALPN: &[u8] = b"iroh_vpn";
 const CHANNEL_CAPACITY: usize = 8192;
@@ -85,11 +86,18 @@ impl Iroh {
 			state_table.insert(pub_key.clone(), ConnectionState::Disconnected);
 		}
 
-		let builder = Endpoint::builder(presets::N0)
-		    .secret_key(secret_key)
+		let mut builder = Endpoint::builder(presets::N0)
+		    .secret_key(secret_key.clone())
 		    .alpns(vec![ALPN.to_vec()])
 		    .bind_addr("0.0.0.0:".to_string() + &listen_port.to_string())
 		    .map_err(InitError::BindAddrError)?;
+		
+		let pkarr_publisher = PkarrPublisher::n0_dns(); 
+		let pkarr_resolver = PkarrResolver::n0_dns();
+		builder = builder
+					.clear_address_lookup()
+					.address_lookup(pkarr_publisher)
+					.address_lookup(pkarr_resolver);
 		
 		let endpoint = builder
 		    .bind()
