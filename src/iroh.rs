@@ -104,8 +104,8 @@ impl Iroh {
 		    .await
 		    .map_err(InitError::BuildError)?;
 
-		endpoint.online().await;
-		info!("Endpoint is online!");
+		//endpoint.online().await;
+		//info!("Endpoint is online!");
 
 		let (tx_to_manager, rx_from_tasks) = mpsc::channel(CHANNEL_CAPACITY);    
 		
@@ -498,4 +498,139 @@ impl Iroh {
 			}
 		}
 	}
+}
+
+
+// =====================
+// TESTS
+// =====================
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use iroh::SecretKey;
+    use tokio::sync::mpsc;
+    use tokio::time::{timeout, Duration};
+    use std::collections::HashSet;
+    use tracing_subscriber::{fmt, EnvFilter};
+
+    fn init_logging() {
+        let filter = EnvFilter::new("error,mesh_network=debug");
+        let _ = fmt().with_env_filter(filter).with_test_writer().try_init();
+    }
+
+    #[tokio::test]
+    async fn test_n_nodes_resilient_mesh() {
+        init_logging();
+
+        let n: usize = std::env::var("MESH_NODES")
+            .unwrap_or_else(|_| "25".to_string())
+            .parse()
+            .expect("Variable MESH_NODES must be a number");
+    
+        let timeout_secs: u64 = std::env::var("MESH_TIMEOUT")
+            .unwrap_or_else(|_| "180".to_string())
+            .parse()
+            .expect("Variable MESH_TIMEOUT must be a number");
+
+        let mut keys = Vec::new();
+        for _ in 0..n {
+            keys.push(SecretKey::generate());
+        }
+        let peers: HashSet<PublicKey> = keys.iter().map(|k| k.public()).collect();
+
+        let (tx_global_events, mut rx_global_events) = mpsc::channel(1000);
+        let mut keep_alive_channels = Vec::new();
+        let mut iroh_nodes = Vec::new();
+
+        for secret_key in &keys {
+            let (tx_to_coord, mut rx_from_iroh) = mpsc::channel(8192);
+            let (tx_from_coord, rx_from_coord) = mpsc::channel(8192);
+            keep_alive_channels.push(tx_from_coord);
+
+            let node_pub_key = secret_key.public();
+            let tx_global_clone = tx_global_events.clone();
+
+            tokio::spawn(async move {
+                while let Some(event) = rx_from_iroh.recv().await {
+                    let _ = tx_global_clone.send((node_pub_key, event)).await;
+                }
+            });
+
+            let mut node_peers = peers.clone();
+            node_peers.remove(&node_pub_key);
+
+            let iroh_node = Iroh::new(
+                secret_key.clone(),
+                node_peers, 
+                tx_to_coord,
+                rx_from_coord,
+                0, 
+            ).await.expect("Failed to init");
+
+            iroh_nodes.push(iroh_node);
+        }
+
+        for node in iroh_nodes {
+            tokio::spawn(node.run());
+        }
+
+        let expected_connections = n * (n - 1); 
+        
+        let mut active_connections = HashSet::new();
+
+        let result = timeout(Duration::from_secs(timeout_secs), async {
+            while let Some((node_id, event)) = rx_global_events.recv().await {
+                match event {
+                    IrohEvent::ConnectedToPeer(peer_id) => {
+                        active_connections.insert((node_id, peer_id));
+                        println!("✅ {} -> {} (Ailve: {}/{})", 
+                            node_id, peer_id, active_connections.len(), expected_connections);
+                        
+                        if active_connections.len() == expected_connections {
+                            break;
+                        }
+                    }
+                    IrohEvent::DisconnectedFromPeer(peer_id) => {
+                        if active_connections.remove(&(node_id, peer_id)) {
+                            println!("❌ {} disconnected from {} (Alive: {}/{})", 
+                                node_id, peer_id, active_connections.len(), expected_connections);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }).await;
+
+        assert!(
+            result.is_ok(),
+            "Timeout! Alive connections: {}/{}",
+            active_connections.len(),
+            expected_connections
+        );
+
+        for node_key in &peers {
+            let mut expected_neighbors = peers.clone();
+            expected_neighbors.remove(node_key);
+
+            let actual_neighbors: HashSet<PublicKey> = active_connections
+                .iter()
+                .filter_map(|(src, dst)| if src == node_key { Some(*dst) } else { None })
+                .collect();
+
+            assert_eq!(
+                actual_neighbors.len(),
+                n - 1,
+                "ERROR: Node {} have only {} instead of expecting {}",
+                node_key, actual_neighbors.len(), n - 1
+            );
+
+            assert_eq!(
+                actual_neighbors,
+                expected_neighbors,
+                "White list error: Node {} connect to incorrect neighbours!\nExpected: {:?}\nReality: {:?}",
+                node_key, expected_neighbors, actual_neighbors
+            );
+        }
+    }
 }
