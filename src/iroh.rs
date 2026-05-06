@@ -96,6 +96,9 @@ impl Iroh {
 		    .await
 		    .map_err(InitError::BuildError)?;
 
+		endpoint.online().await;
+		info!("Endpoint is online!");
+
 		let (tx_to_manager, rx_from_tasks) = mpsc::channel(CHANNEL_CAPACITY);    
 		
 		Ok(Iroh {
@@ -150,21 +153,7 @@ impl Iroh {
 		match event {
 			ConnectionEvent::OutgoingConnection(conn) => {
 				match self.state_table.get(&conn.remote_id()) {
-					Some(state) => match state {
-						// in queue possible 2 outgoing
-						// for example {DisconnectCore, ConnectCore,
-						// ... here already produced another outgoing connection from another task ..., 
-						// OutgoingConnection}
-						
-						// so it is comes down to 
-						// {OutgoingConn(pub_key_x), OutgoingConn(pub_key_x)}
-						// so other peer accept the second one probably
-						
-						// can he accept the first one??? - no, because the first one change dist peer state to connected,
-						// after that he receive the another conn, accept it
-
-						// he definitely accept the second one
-						// so here we can do the same - accept the second if we already connected  
+					Some(state) => match state { 
 						ConnectionState::Connecting(_) => {
 							info!(peer = %conn.remote_id(), "Successfully init connection to");
 							self.init_ready_connection(conn).await;
@@ -204,17 +193,11 @@ impl Iroh {
 				match self.state_table.get(&conn.remote_id()) {
 					Some(state) => match state {
 						ConnectionState::WaitingIncomingConnection => {
-							// {DisconnectCore, ConnectCore - state = Waiting, IncomingConnection} - it's ok
-							// in that queue can be multiple Incoming, so just accept the latest one
 							info!(peer = %conn.remote_id(), "Succesfully accept incoming connection from");
 							self.init_ready_connection(conn).await;		
 						}
 
 						ConnectionState::Connected{task: expired_task, connection: expired_conn, ..} => {
-							// already handle Incoming, so in queue 2 incoming, 
-							// this should be impossible, without expired connection or data race on another peer
-
-							// also possible ddos
 							info!("New incoming connection replace previous task");
 							expired_task.abort();
 							expired_conn.close(1u32.into(), b"connection is expired: peer open another connection");
@@ -243,14 +226,10 @@ impl Iroh {
 				}
 			}
 			
-			// invariants done
 			ConnectionEvent::Disconnected(pub_key) => {
 				match self.state_table.get(&pub_key) {
 					Some (state) => match state {
 						ConnectionState::Connected{..} => {
-							// {DisconnectCore, ConnectCore, already connected (it's not possible,
-							// because we handle the ConnctedToPeer after Disconnect from task), Disconnect from task}
-							// everything ok, it's correct disconnect for CURRENT connection
 							info!(peer = %pub_key, "Disconnected from");
 							let _ = self.tx_to_coord.send(
 								IrohEvent::DisconnectedFromPeer(pub_key.clone())
@@ -260,7 +239,6 @@ impl Iroh {
 
 						ConnectionState::Connecting(_) => {
 							// possible queue {DisconnectCore, ConnectCore, Disconnected from task}
-							// so nothing to do
 							debug!("data race: receive ConnectionEvent::Disconnected while current state is Connecting");
 						}
 
@@ -271,7 +249,7 @@ impl Iroh {
 						}
 
 						ConnectionState::Disconnected => {
-							// also possible {DisconnectCore, Disconnect from task}
+							// also possible queue {DisconnectCore, Disconnect from task}
 							debug!("data race: receive ConnectionEvent::Disconnected while current state is Disconnected")
 						}
 					}
@@ -473,12 +451,14 @@ impl Iroh {
 		loop {
 			match endpoint.connect(to, ALPN).await {
 				Ok(conn) => {
-					// info!("Successfully connected");
 					let _ = tx_to_manager.send(ConnectionEvent::OutgoingConnection(conn)).await;
 					return;
 				}
 				Err(e) => {
 					debug!(error = %e, "Connection failed, retrying in 1s");
+					if let Ok(dns_resolver) = endpoint.dns_resolver() {
+						dns_resolver.clear_cache().await;
+					}
 					sleep(Duration::from_secs(1)).await;
 				}
 			}
