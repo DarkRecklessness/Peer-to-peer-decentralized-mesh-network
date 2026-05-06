@@ -31,7 +31,7 @@ async fn main() {
 	info!("Logger start successfully");
 
 	// Print public key
-	info!(public_key = cfg.secret_key.public().to_z32(), "Your public key");
+	info!(public_key = cfg.secret_key.public().to_string(), "Your public key");
 
 	// Calculate application mtu
 	let final_mtu = cfg.mtu - 20  // ipv4 header

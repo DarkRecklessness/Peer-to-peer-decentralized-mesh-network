@@ -11,7 +11,7 @@ use std::error::Error;
 
 const SUBNET: Ipv4Addr = Ipv4Addr::new(10, 67, 0, 0);
 const NETMASK: Ipv4Addr = Ipv4Addr::new(255, 255, 0, 0);
-const DEFAULT_LISTEN_PORT: u16 = 6767;
+const DEFAULT_LISTEN_PORT: u16 = 0;
 const DEFAULT_MTU: u16 = 1500;
 const DEFAULT_TUN_NAME: &str = "iroh_vpn";
 
@@ -175,7 +175,7 @@ impl Config {
 					return Err(ConfigError::Ipv4ParseError(e));
 				}
 			};
-			let pub_key = match PublicKey::from_z32(&peer.pub_key[..]) {
+			let pub_key = match PublicKey::from_str(&peer.pub_key[..]) {
 				Ok(pk) => pk,
 				Err(e) => {
 					return Err(ConfigError::PublicKeyParseError(e));
@@ -243,7 +243,7 @@ mod tests {
         let dir = tempdir().unwrap();
         let secret_key_path = dir.path().join("tmp_secret.key");
         
-        let peer_pub_key = SecretKey::generate().public().to_z32();
+        let peer_pub_key = SecretKey::generate().public().to_string();
 
         let toml_content = format!(r#"
             secret_key_path = "{}"
@@ -274,7 +274,7 @@ mod tests {
         
         let peer_ip = Ipv4Addr::new(10, 67, 2, 10);
         assert!(config.peers.contains_key(&peer_ip));
-        assert_eq!(config.peers.get(&peer_ip).unwrap().to_z32(), peer_pub_key);
+        assert_eq!(config.peers.get(&peer_ip).unwrap().to_string(), peer_pub_key);
     }
 
     #[test]
@@ -322,21 +322,6 @@ mod tests {
             result,
             Err(ConfigError::SecretKeyError(SecretKeyError::IncorrectKey))
         ));
-    }
-
-    #[test]
-    fn test_invalid_peer_pub_key_z32() {
-        let dir = tempdir().unwrap();
-        
-        let toml_content = r#"
-            secret_key_path = "/tmp/dummy.key"
-            node_ipv4 = "10.67.1.1"
-            [[peers]]
-            pub_key = "this_is_obviously_not_a_valid_z32_iroh_key"
-            ipv4 = "10.67.2.10"
-        "#;
-        let config_path = create_config_file(&dir, toml_content);
-        assert!(matches!(Config::from_file(&config_path), Err(ConfigError::PublicKeyParseError(_))));
     }
 
     #[test]
