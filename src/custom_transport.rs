@@ -1,6 +1,7 @@
 use std::any::Any;
 use std::time::Instant;
 use iroh::endpoint::{Controller, ControllerFactory, ControllerMetrics};
+use std::sync::Arc;
 
 #[derive(Debug, Clone)]
 struct CustomController {
@@ -43,7 +44,7 @@ pub struct CustomControllerFactory;
 
 impl ControllerFactory for CustomControllerFactory {
     fn build(
-        self = Arc<Self>, 
+        self: Arc<Self>, 
         _now: Instant, 
         _current_mtu: u16,
     ) -> Box<dyn Controller> {

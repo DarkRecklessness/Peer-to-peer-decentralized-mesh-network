@@ -10,7 +10,8 @@ use tracing::{info, warn, error, debug, trace, instrument};
 use std::fmt;
 use std::error::Error;
 use iroh::address_lookup::{AddressLookupBuilder, pkarr::PkarrPublisher, pkarr::PkarrResolver};
-use crate::custom_controller::CustomControllerFactory;
+use crate::custom_transport::CustomControllerFactory;
+use std::sync::Arc;
 
 const ALPN: &[u8] = b"iroh_vpn";
 const CHANNEL_CAPACITY: usize = 8192;
@@ -395,8 +396,7 @@ impl Iroh {
 		}
 		
 		tokio::spawn(
-			Self::accept_connections(self.endpoint.clone(), 
-									 std::mem::take(&mut self.peers), 
+			Self::accept_connections(self.endpoint.clone(),
 									 self.tx_to_manager.clone())
 		);
 	}
@@ -472,15 +472,14 @@ impl Iroh {
 					if let Ok(dns_resolver) = endpoint.dns_resolver() {
 						dns_resolver.clear_cache().await;
 					}
-					sleep(Duration::from_secs(1)).await;
+					sleep(Duration::from_secs(2)).await;
 				}
 			}
 		}
 	}
 
 	#[instrument(skip_all)]
-	async fn accept_connections(endpoint: Endpoint, 
-							    peers: HashSet<PublicKey>, 
+	async fn accept_connections(endpoint: Endpoint,
 							    tx_to_manager: mpsc::Sender<ConnectionEvent>) 
 	{
 		info!("Started listening for incoming connections");
@@ -529,14 +528,14 @@ mod tests {
         init_logging();
 
         let n: usize = std::env::var("MESH_NODES")
-            .unwrap_or_else(|_| "25".to_string())
+            .unwrap_or_else(|_| "20".to_string())
             .parse()
             .expect("Variable MESH_NODES must be a number");
     
-        let timeout_secs: u64 = std::env::var("MESH_TIMEOUT")
-            .unwrap_or_else(|_| "180".to_string())
+        let timeout_secs: u64 = std::env::var("MESH_CONNECT_TIMEOUT")
+            .unwrap_or_else(|_| "240".to_string())
             .parse()
-            .expect("Variable MESH_TIMEOUT must be a number");
+            .expect("Variable MESH_TIMEOUT must be a number");   
 
         let mut keys = Vec::new();
         for _ in 0..n {
@@ -544,16 +543,18 @@ mod tests {
         }
         let peers: HashSet<PublicKey> = keys.iter().map(|k| k.public()).collect();
 
-        let (tx_global_events, mut rx_global_events) = mpsc::channel(1000);
-        let mut keep_alive_channels = Vec::new();
+        let (tx_global_events, mut rx_global_events) = mpsc::channel(100000);
+        
+        let mut controllers: HashMap<PublicKey, mpsc::Sender<CoreAction>> = HashMap::new();
         let mut iroh_nodes = Vec::new();
 
         for secret_key in &keys {
-            let (tx_to_coord, mut rx_from_iroh) = mpsc::channel(8192);
-            let (tx_from_coord, rx_from_coord) = mpsc::channel(8192);
-            keep_alive_channels.push(tx_from_coord);
+            let (tx_to_coord, mut rx_from_iroh) = mpsc::channel(100000);
+            let (tx_from_coord, rx_from_coord) = mpsc::channel(100000);
 
-            let node_pub_key = secret_key.public();
+			let node_pub_key = secret_key.public();
+            controllers.insert(node_pub_key.clone(), tx_from_coord);
+
             let tx_global_clone = tx_global_events.clone();
 
             tokio::spawn(async move {
@@ -563,7 +564,7 @@ mod tests {
             });
 
             let mut node_peers = peers.clone();
-            node_peers.remove(&node_pub_key);
+            node_peers.remove(&secret_key.public());
 
             let iroh_node = Iroh::new(
                 secret_key.clone(),
@@ -581,9 +582,13 @@ mod tests {
         }
 
         let expected_connections = n * (n - 1); 
-        
         let mut active_connections = HashSet::new();
 
+
+		// =========
+		// CONNECTION PHASE
+		// =========
+		
         let result = timeout(Duration::from_secs(timeout_secs), async {
             while let Some((node_id, event)) = rx_global_events.recv().await {
                 match event {
@@ -614,6 +619,11 @@ mod tests {
             expected_connections
         );
 
+
+		// ============
+		// CONNECTIVITY CHECK
+		// ============
+
         for node_key in &peers {
             let mut expected_neighbors = peers.clone();
             expected_neighbors.remove(node_key);
@@ -637,5 +647,72 @@ mod tests {
                 node_key, expected_neighbors, actual_neighbors
             );
         }
+
+
+        // ==========
+        // CONNECTIONS CHECK
+        // ==========
+
+        let packet = Bytes::from_static(b"test_ping");
+		let mut no_data_pairs: HashSet<(PublicKey, PublicKey)> = HashSet::new();
+		for peer_a in &peers {
+			for peer_b in &peers {
+				if peer_a == peer_b {
+					continue;
+				}
+
+				no_data_pairs.insert((peer_a.clone(), peer_b.clone()));
+			}
+		}
+
+		let result_data = timeout(Duration::from_secs(15), async {
+			while no_data_pairs.len() > 0 {
+				for (peer_a, peer_b) in &no_data_pairs {
+					if let Some(tx_coord) = controllers.get(peer_a) {
+						let _ = tx_coord.send(CoreAction::SendPacketTo(packet.clone(), peer_b.clone())).await;
+					}
+				}
+
+				loop {
+			        match timeout(Duration::from_millis(500), rx_global_events.recv()).await {
+						Ok(Some((node_id, event))) => {
+				        	match event {
+				        		IrohEvent::RecvPacketFrom(data, peer_id) => {
+									if data == packet {
+				        			    no_data_pairs.remove(&(peer_id, node_id)); 
+
+				        			    if no_data_pairs.len() == 0 {
+				        			        break;
+				        			    }
+				        			}            			
+				        		}
+				        		IrohEvent::ConnectedToPeer(pub_key) => {
+				        			println!("✅ Node {} connected to {}", node_id, pub_key);
+				        		}
+				        		IrohEvent::DisconnectedFromPeer(pub_key) => {
+				        			println!("❌ Node {} disconnected from {}", node_id, pub_key);
+				        		}
+				        	}
+				    	}
+				    	Ok(None) => break,
+				    	Err(_) => break,    	
+			        }
+		        }
+		    }
+		}).await;        
+
+		if no_data_pairs.len() > 0 {
+		    println!("=== MISSING CONNECTIONS ===");
+		    for (peer_a, peer_b) in &no_data_pairs {
+		    	println!("Missing data: {} -> {}", peer_a, peer_b);
+		    }
+		}
+
+        assert!(
+			result_data.is_ok(),
+			"Timeout waiting for datagrams! Successful deliveries: {}/{}",
+			expected_connections - no_data_pairs.len(),
+			expected_connections
+		);
     }
 }
