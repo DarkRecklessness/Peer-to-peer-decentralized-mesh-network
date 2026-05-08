@@ -5,7 +5,6 @@ use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilte
 use std::collections::HashSet;
 use tokio::sync::mpsc;
 
-//const CONFIG_PATH: &str = "config.toml";
 const INTERMOD_CHANNEL_CAPACITY: usize = 8192;
 
 #[tokio::main]
@@ -33,11 +32,7 @@ async fn main() {
 	// Print public key
 	info!(public_key = cfg.secret_key.public().to_string(), "Your public key");
 
-	// Calculate application mtu
-	let final_mtu = cfg.mtu - 20  // ipv4 header
-							- 8   // udp header
-							- 50  // quic overhead
-							- 22; // safe extra
+	let final_mtu = 1200; // safety value
 
 	// Configure dependencies
 	let mut peers: HashSet<PublicKey> = HashSet::new();

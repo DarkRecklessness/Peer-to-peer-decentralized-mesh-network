@@ -1,5 +1,6 @@
 use iroh::{SecretKey, PublicKey};
-use iroh::endpoint::{Endpoint, presets, Connection, InvalidSocketAddr, BindError, SendDatagramError, Builder};
+use iroh::endpoint::{Endpoint, presets, Connection, InvalidSocketAddr, 
+					 BindError, SendDatagramError, Builder, QuicTransportConfig};
 use bytes::Bytes;
 use tokio::sync::mpsc;
 use std::collections::{HashSet, HashMap};
@@ -9,6 +10,7 @@ use tracing::{info, warn, error, debug, trace, instrument};
 use std::fmt;
 use std::error::Error;
 use iroh::address_lookup::{AddressLookupBuilder, pkarr::PkarrPublisher, pkarr::PkarrResolver};
+use crate::custom_controller::CustomControllerFactory;
 
 const ALPN: &[u8] = b"iroh_vpn";
 const CHANNEL_CAPACITY: usize = 8192;
@@ -86,9 +88,15 @@ impl Iroh {
 			state_table.insert(pub_key.clone(), ConnectionState::Disconnected);
 		}
 
+		let quic_transport = QuicTransportConfig::builder()
+								.congestion_controller_factory(Arc::new(CustomControllerFactory))
+								.initial_mtu(1200)
+								.build();
+
 		let mut builder = Endpoint::builder(presets::N0)
 		    .secret_key(secret_key.clone())
 		    .alpns(vec![ALPN.to_vec()])
+		    .transport_config(quic_transport)
 		    .bind_addr("0.0.0.0:".to_string() + &listen_port.to_string())
 		    .map_err(InitError::BindAddrError)?;
 		
@@ -103,9 +111,6 @@ impl Iroh {
 		    .bind()
 		    .await
 		    .map_err(InitError::BuildError)?;
-
-		//endpoint.online().await;
-		//info!("Endpoint is online!");
 
 		let (tx_to_manager, rx_from_tasks) = mpsc::channel(CHANNEL_CAPACITY);    
 		
