@@ -1,6 +1,6 @@
 use iroh::{SecretKey, PublicKey};
 use iroh::endpoint::{Endpoint, presets, Connection, InvalidSocketAddr, 
-					 BindError, SendDatagramError, Builder, QuicTransportConfig};
+					 BindError, SendDatagramError, QuicTransportConfig};
 use bytes::Bytes;
 use tokio::sync::mpsc;
 use std::collections::{HashSet, HashMap};
@@ -9,7 +9,7 @@ use tokio::task::JoinHandle;
 use tracing::{info, warn, error, debug, trace, instrument};
 use std::fmt;
 use std::error::Error;
-use iroh::address_lookup::{AddressLookupBuilder, pkarr::PkarrPublisher, pkarr::PkarrResolver};
+use iroh::address_lookup::{pkarr::PkarrPublisher, pkarr::PkarrResolver};
 use crate::custom_transport::CustomControllerFactory;
 use std::sync::Arc;
 
@@ -62,6 +62,7 @@ enum ConnectionEvent {
 	OutgoingConnection(Connection),
 	IncomingConnection(Connection),
 	Disconnected(PublicKey),
+	#[allow(unused)]
 	InternalError,
 }
 
@@ -286,7 +287,7 @@ impl Iroh {
 		match event {
 			CoreAction::SendPacketTo(packet, to) => {
 				if let Some(ConnectionState::Connected{tx_packet_channel, ..}) = self.state_table.get(&to) {
-					if let Err(e) = tx_packet_channel.try_send(packet) {
+					if let Err(_e) = tx_packet_channel.try_send(packet) {
 					    debug!(to = %to, "Peer queue is full, dropping packet");
 					}
 					return;
@@ -414,7 +415,7 @@ impl Iroh {
 					match result {
 						Ok(packet) => {
 							trace!(size = packet.len(), "Received packet from peer");
-							if let Err(e) = tx_packet_channel.try_send(
+							if let Err(_e) = tx_packet_channel.try_send(
 								IrohEvent::RecvPacketFrom(packet, connection.remote_id())
 							) {
 							    debug!("Coordinator queue is full, dropping packet from Iroh peer");

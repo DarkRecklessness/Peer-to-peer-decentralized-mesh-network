@@ -17,6 +17,7 @@ pub struct VpnCore {
 
 struct PeerState {
 	is_connected: bool,
+	#[allow(unused)]
 	ipv4_addr: Ipv4Addr,
 	packet_queue: VecDeque<Bytes>,
 }

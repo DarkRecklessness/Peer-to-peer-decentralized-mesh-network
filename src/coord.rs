@@ -2,7 +2,7 @@ use crate::vpn_core::{VpnCore, Action, Event};
 use crate::iroh::{CoreAction, IrohEvent};
 use tokio::sync::mpsc::{self, error::TrySendError};
 use bytes::Bytes;
-use tracing::{info, warn, error, debug, trace, instrument};
+use tracing::{warn, debug, trace, instrument};
 
 pub struct Coordinator {
 	core: VpnCore,

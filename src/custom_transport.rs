@@ -1,6 +1,6 @@
 use std::any::Any;
 use std::time::Instant;
-use iroh::endpoint::{Controller, ControllerFactory, ControllerMetrics};
+use iroh::endpoint::{Controller, ControllerFactory};
 use std::sync::Arc;
 
 #[derive(Debug, Clone)]

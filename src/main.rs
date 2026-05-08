@@ -1,6 +1,6 @@
 use mesh_network::{config::Config, vpn_core::VpnCore, coord::Coordinator, iroh::Iroh, tun::Tun};
-use iroh::{SecretKey, PublicKey};
-use tracing::{info, warn, error, debug, trace, instrument};
+use iroh::PublicKey;
+use tracing::{info, warn, error};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter, fmt};
 use std::collections::HashSet;
 use tokio::sync::mpsc;
