@@ -32,7 +32,7 @@ async fn main() {
 	// Print public key
 	info!(public_key = cfg.secret_key.public().to_string(), "Your public key");
 
-	let final_mtu = 1200; // safety value
+	let final_mtu = 1100; // safety value
 
 	// Configure dependencies
 	let mut peers: HashSet<PublicKey> = HashSet::new();
