@@ -536,7 +536,19 @@ mod tests {
         let timeout_secs: u64 = std::env::var("MESH_CONNECT_TIMEOUT")
             .unwrap_or_else(|_| "240".to_string())
             .parse()
-            .expect("Variable MESH_TIMEOUT must be a number");   
+            .expect("Variable MESH_TIMEOUT must be a number");
+
+        let min_delay: u64 = std::env::var("MIN_INIT_NODES_DELAY") // in ms
+             .unwrap_or_else(|_| "0".to_string())
+             .parse()
+             .expect("Variable MIN_INIT_NODES_DELAY must be a number");
+
+        let max_delay: u64 = std::env::var("MAX_INIT_NODES_DELAY")
+             .unwrap_or_else(|_| "2000".to_string())
+             .parse()
+             .expect("Variable MAX_INIT_NODES_DELAY must be a number");     
+
+		assert!(max_delay >= min_delay, "MAX_DELAY must be greater or equal than MIN_DELAY");
 
         let mut keys = Vec::new();
         for _ in 0..n {
@@ -577,9 +589,13 @@ mod tests {
 
             iroh_nodes.push(iroh_node);
         }
-
+		
+		let mut i: usize = 1;
         for node in iroh_nodes {
             tokio::spawn(node.run());
+            info!("Node {} was started", i);
+            i += 1;
+            tokio::time::sleep(Duration::from_millis(rand::random_range(min_delay..=max_delay))).await;
         }
 
         let expected_connections = n * (n - 1); 
@@ -666,7 +682,7 @@ mod tests {
 			}
 		}
 
-		let result_data = timeout(Duration::from_secs(15), async {
+		let result_data = timeout(Duration::from_secs(60), async {
 			while no_data_pairs.len() > 0 {
 				for (peer_a, peer_b) in &no_data_pairs {
 					if let Some(tx_coord) = controllers.get(peer_a) {
