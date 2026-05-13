@@ -7,6 +7,9 @@ secret_key_path = "/path/to/your/secret.key"
 # IMPORTANT: The address must be within the 10.67.0.0/16 subnet.
 node_ipv4 = "10.67.1.5"
 
+# Tun interface name (optional, default is "iroh_vpn")
+# tun_name = "my_custom_name"
+
 # Port for incoming connections (optional).
 # Uncomment to override the default behavior.
 # listen_port = 6767
@@ -16,15 +19,20 @@ node_ipv4 = "10.67.1.5"
 # on the way to adjacent nodes.
 # mtu = 1500
 
+# Log level (optional, possible variants: trace, debug, info, warn, error, off, default is info)
+# log_level = "info"
+
+# Log path (optional, this is an additional logging in file to stdout)
+# log_path = "/path/to/your/log/file"
 
 # ==========================================
 # Adjacent nodes (Whitelist)
 # ==========================================
 # You can add multiple [[peers]] blocks to define your whitelist.
 [[peers]]
-pub_key = "3pj4c7xtn1r8x8o1q8z9e4j6h5w3a3m9p7z8n1r8x8o1q8z9e4jy"
+pub_key = "xkh8cq69d6qxt5zz9gx9x97djohf3c1mgqbiq3ku5cc679nix91o"
 ipv4 = "10.67.2.10"
 
 # [[peers]]
-# pub_key = "4pj4c7xtn1r8x8o1q8z9e4j6h5w3a3m9p7z8n1r8x8o1q8z9e4jy"
+# pub_key = "xkh8cq65d6qxt5zz9gx9x97djohf3c1mgqbiq3ku5cc679nix91o"
 # ipv4 = "10.67.1.11"

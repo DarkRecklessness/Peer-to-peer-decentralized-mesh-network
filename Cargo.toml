@@ -2,10 +2,21 @@
 name = "mesh_network"
 version = "0.1.0"
 edition = "2024"
+license = "Apache-2.0 OR MIT"
 
 [dependencies]
 anyhow = "1.0.102"
-iroh = "=0.97.0"
+iroh = "0.98.0"
 tokio = "1.50.0"
 rand = "0.9.2"
 bytes = "1.11.1"
+toml = "1.1.2"
+serde = "1.0.228"
+tun = { version = "0.8.7", features = ["async"] }
+tracing = "0.1"
+tracing-appender = "0.2"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+[dev-dependencies]
+# only for tests
+tempfile = "3.10"

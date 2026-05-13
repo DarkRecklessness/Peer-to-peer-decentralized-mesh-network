@@ -1,0 +1,20 @@
+# Path to the secret key
+secret_key_path = "secret2.key"
+
+# Node IPv4 address
+node_ipv4 = "10.67.1.2"
+
+# Port for incoming connections (0 means random available port)
+listen_port = 0
+
+tun_name = "tun2"
+
+log_level = "debug"
+
+# ==========================================
+# Adjacent nodes (Whitelist)
+# ==========================================
+[[peers]]
+pub_key = "104ce1862724b55fd7647c07b7d462628634a8d6b6690e1b083a30c6c4b5fb7d"
+ipv4 = "10.67.1.1"
+

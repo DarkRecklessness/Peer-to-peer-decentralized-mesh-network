@@ -1,0 +1,47 @@
+services:
+  node1:
+    image: ubuntu:24.04
+    container_name: vpn_node1
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - .:/app
+      - ../../target/release/mesh_network:/app/mesh_network
+    working_dir: /app
+    command: >
+      bash -c "apt-get update && 
+      apt-get install -y iperf3 iproute2 iputils-ping || true && 
+      chmod +x ./mesh_network &&
+      ./mesh_network node_1.toml"
+    networks:
+      testing_net:
+        ipv4_address: 172.20.0.10
+
+  node2:
+    image: ubuntu:24.04
+    container_name: vpn_node2
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    volumes:
+      - .:/app
+      - ../../target/release/mesh_network:/app/mesh_network
+    working_dir: /app
+    command: >
+      bash -c "apt-get update && 
+      apt-get install -y iperf3 iproute2 iputils-ping || true && 
+      chmod +x ./mesh_network &&
+      ./mesh_network node_2.toml"
+    networks:
+      testing_net:
+        ipv4_address: 172.20.0.11
+
+networks:
+  testing_net:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/24
