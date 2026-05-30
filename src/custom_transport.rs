@@ -1,7 +1,7 @@
-use std::any::Any;
-use std::time::Instant;
 use iroh::endpoint::{Controller, ControllerFactory};
+use std::any::Any;
 use std::sync::Arc;
+use std::time::Instant;
 
 #[derive(Debug, Clone)]
 struct CustomController {
@@ -16,7 +16,8 @@ impl Controller for CustomController {
         _is_persistent_congestion: bool,
         _is_ecn: bool,
         _lost_bytes: u64,
-    ) {}
+    ) {
+    }
 
     fn on_mtu_update(&mut self, new_mtu: u16) {
         self.mtu = new_mtu;
@@ -43,13 +44,7 @@ impl Controller for CustomController {
 pub struct CustomControllerFactory;
 
 impl ControllerFactory for CustomControllerFactory {
-    fn build(
-        self: Arc<Self>, 
-        _now: Instant, 
-        _current_mtu: u16,
-    ) -> Box<dyn Controller> {
-        Box::new(CustomController{
-        	mtu: 1200,
-        })
+    fn build(self: Arc<Self>, _now: Instant, _current_mtu: u16) -> Box<dyn Controller> {
+        Box::new(CustomController { mtu: 1200 })
     }
 }

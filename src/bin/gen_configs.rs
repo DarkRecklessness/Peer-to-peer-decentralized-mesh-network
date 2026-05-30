@@ -1,8 +1,8 @@
+use iroh::SecretKey;
 use std::env;
 use std::fs::{self, File};
 use std::io::Write;
 use std::path::Path;
-use iroh::SecretKey;
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args: Vec<String> = env::args().collect();
@@ -13,7 +13,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 
     let n: usize = args[1].parse().expect("N must be a number");
     let tmp_dir = Path::new("tmp");
-    
+
     if !tmp_dir.exists() {
         fs::create_dir_all(tmp_dir)?;
     }
@@ -27,7 +27,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let ip = format!("10.67.1.{}", i);
         let secret_path = format!("tmp/secret{}.key", i);
         let tun_name = format!("tun{}", i);
-        fs::write(&secret_path, secret_key.to_bytes())?; 
+        fs::write(&secret_path, secret_key.to_bytes())?;
         nodes.push((i, pub_key.to_string(), ip, secret_path, tun_name));
     }
 
@@ -38,21 +38,24 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         writeln!(file, "# Path to the secret key")?;
         writeln!(file, "secret_key_path = \"{}\"", secret_path)?;
         writeln!(file, "")?;
-        
+
         writeln!(file, "# Node IPv4 address")?;
         writeln!(file, "node_ipv4 = \"{}\"", ip)?;
         writeln!(file, "")?;
-        
-        writeln!(file, "# Port for incoming connections (0 means random available port)")?;
+
+        writeln!(
+            file,
+            "# Port for incoming connections (0 means random available port)"
+        )?;
         writeln!(file, "listen_port = 0")?;
         writeln!(file, "")?;
 
-		writeln!(file, "tun_name = \"{}\"", tun_name)?;
-		writeln!(file, "")?;
+        writeln!(file, "tun_name = \"{}\"", tun_name)?;
+        writeln!(file, "")?;
 
-		writeln!(file, "log_level = \"debug\"")?;
-		writeln!(file, "")?;
-        
+        writeln!(file, "log_level = \"debug\"")?;
+        writeln!(file, "")?;
+
         writeln!(file, "# ==========================================")?;
         writeln!(file, "# Adjacent nodes (Whitelist)")?;
         writeln!(file, "# ==========================================")?;

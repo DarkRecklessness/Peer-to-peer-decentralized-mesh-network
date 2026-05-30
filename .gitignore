@@ -2,3 +2,7 @@
 config.toml
 secret.key
 /tmp
+/deploy
+/win
+*.key
+*.zip
