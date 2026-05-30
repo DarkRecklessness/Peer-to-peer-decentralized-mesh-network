@@ -11,6 +11,10 @@ pub struct Tun {
 	config: Configuration,
 	tx_to_coord: mpsc::Sender<Bytes>,
 	rx_from_coord: mpsc::Receiver<Bytes>,
+	tun_name: String,
+    tun_ip: Ipv4Addr,
+    netmask: Ipv4Addr,
+    mtu: u16,
 }  
 
 #[derive(Debug)]
@@ -61,17 +65,30 @@ impl Tun {
 	{
 		let mut config = Configuration::default();
 		
-		config.mtu(mtu)
-		      .address(tun_ip)
-		      .netmask(netmask)
-		      .tun_name(tun_name)
-		      .up();
+		#[cfg(target_os = "linux")]
+        {
+            config.mtu(mtu)
+                  .address(tun_ip)
+                  .netmask(netmask)
+                  .tun_name(tun_name)
+                  .up();
+        }
 
-		Tun {
-			config,
-			tx_to_coord,
-			rx_from_coord,
-		}
+        #[cfg(target_os = "windows")]
+        {
+            config.tun_name("MeshVPN")
+                  .up();
+        }
+
+        Tun {
+            config,
+            tx_to_coord,
+            rx_from_coord,
+            tun_name: if cfg!(target_os = "windows") { "MeshVPN".to_string() } else { tun_name.to_string() },
+            tun_ip,
+            netmask,
+            mtu,
+        }
 	}
 
 	#[instrument(skip_all)]
@@ -88,6 +105,48 @@ impl Tun {
 			};
 
 			info!("Tun interface is up");
+
+
+			#[cfg(target_os = "windows")]
+            {
+                info!("Configuring Windows TUN IP manually via netsh...");
+                let ip_str = self.tun_ip.to_string();
+                let mask_str = self.netmask.to_string();
+                let tun_name_arg = format!("name={}", self.tun_name);
+                
+                let ip_output = std::process::Command::new("netsh")
+                    .args([
+                        "interface", "ipv4", "set", "address", 
+                        &tun_name_arg, 
+                        "static", &ip_str, &mask_str
+                    ])
+                    .output();
+                
+				if let Ok(out) = ip_output {
+                    if !out.status.success() {
+                        error!("netsh IP set failed: {}", String::from_utf8_lossy(&out.stderr));
+                    }
+                }
+
+                let mtu_str = format!("mtu={}", self.mtu);
+                let mtu_output = std::process::Command::new("netsh")
+                    .args([
+                        "interface", "ipv4", "set", "subinterface", 
+                        &self.tun_name, 
+                        &mtu_str, 
+                        "store=persistent"
+                    ])
+                    .output();
+
+				match mtu_output {
+                    Ok(out) if !out.status.success() => {
+                        error!("netsh MTU set failed: {}", String::from_utf8_lossy(&out.stderr));
+                    }
+                    Err(e) => error!("Failed to execute netsh for MTU: {}", e),
+                    _ => info!("Windows TUN IP and MTU ({}) configured successfully", self.mtu),
+                }             
+            }
+			
 
 			let (tun_device_reader, tun_device_writer) = tokio::io::split(tun_device);
 			
